@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/pageManager.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -252,6 +253,69 @@ void TestPermittedMappedLateFaultsResume() {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
+void TestStaleReadFaultOnWriteWatchedPage() {
+  FaultContext context;
+  PageManager manager(InvalidateFault, &context);
+  context.manager = &manager;
+  const auto page_size = manager.GetPageSize();
+  auto *memory = Allocate(page_size);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+
+  manager.OnGpuMap(address, page_size);
+  manager.UpdatePageWatchers(true, address, page_size,
+                             Libs::Graphics::PageWatchMode::Write);
+  manager.UpdatePageWatchers(true, address, page_size,
+                             Libs::Graphics::PageWatchMode::ReadWrite);
+  manager.UpdatePageWatchers(false, address, page_size,
+                             Libs::Graphics::PageWatchMode::ReadWrite);
+  Check(Protection(memory) == PAGE_READONLY,
+        "write-only watcher did not leave the page read-only");
+  // Two CPUs can fault while the page is still no-access; the downgrade to a
+  // write-only watcher publishes one late_read_pending hint. The first stale
+  // read consumes it, the second must still resume because the read-only
+  // mapping already permits the access (previously a fail-fast).
+  Check(manager.HandleFault(PageFaultAccess::Read, address + 8),
+        "first stale read after the mode downgrade was not accepted");
+  Check(manager.HandleFault(PageFaultAccess::Read, address + 16),
+        "stale read losing the late_read_pending race was not accepted");
+  Check(manager.IsTracked(address) && Protection(memory) == PAGE_READONLY,
+        "stale reads must not disturb the write watcher");
+  Check(manager.HandleFault(PageFaultAccess::Write, address),
+        "write fault on the write-watched page was not handled");
+  Check(!manager.IsTracked(address) && IsWritable(memory),
+        "write fault did not release the watcher");
+
+  // A read fault raised while a write resolver holds the page must wait the
+  // resolution out and then resume (previously a fail-fast in the resolver
+  // compatibility check).
+  manager.UpdatePageWatchers(true, address, page_size,
+                             Libs::Graphics::PageWatchMode::Write);
+  context.block = true;
+  context.entered.store(false, std::memory_order_release);
+  context.release.store(false, std::memory_order_release);
+  bool writer_handled = false;
+  bool reader_handled = false;
+  std::thread writer([&] {
+    writer_handled = manager.HandleFault(PageFaultAccess::Write, address);
+  });
+  while (!context.entered.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  std::thread reader([&] {
+    reader_handled = manager.HandleFault(PageFaultAccess::Read, address + 8);
+  });
+  // Give the reader time to reach the resolver-wait loop so the race window
+  // is actually exercised; the assertions hold in either interleaving.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  context.release.store(true, std::memory_order_release);
+  writer.join();
+  reader.join();
+  Check(writer_handled && reader_handled,
+        "stale read during write resolution was not resumed");
+  manager.OnGpuUnmap(address, page_size);
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+}
+
 void TestPartialMappingUnmapPreservesTokens() {
   FaultContext context;
   PageManager manager(InvalidateFault, &context);
@@ -467,7 +531,7 @@ void TestCrossRegionRange() {
     if (std::strcmp(name, "destructor-watch") == 0) {
       manager.reset();
     } else if (std::strcmp(name, "non-write") == 0) {
-      (void)manager->HandleFault(PageFaultAccess::Read, address);
+      (void)manager->HandleFault(PageFaultAccess::Execute, address);
     } else if (std::strcmp(name, "callback-false") == 0) {
       context.result = false;
       (void)manager->HandleFault(PageFaultAccess::Write, address);
@@ -485,7 +549,7 @@ void TestCrossRegionRange() {
       while (!context.entered.load(std::memory_order_acquire)) {
         std::this_thread::yield();
       }
-      (void)manager->HandleFault(PageFaultAccess::Read, address);
+      (void)manager->HandleFault(PageFaultAccess::Execute, address);
       first.join();
     } else if (std::strcmp(name, "watched-unmap") == 0) {
       manager->OnGpuUnmap(address, page_size);
@@ -642,6 +706,7 @@ int main(int argc, char **argv) {
   TestPermittedMappedLateFaultsResume();
   TestPartialMappingUnmapPreservesTokens();
   TestNativeDelayedReadAfterModeDowngrade();
+  TestStaleReadFaultOnWriteWatchedPage();
   TestDelayedFaultAfterExplicitUnwatch();
   TestNativeAccessViolation();
   TestInvalidLateWriteTokenIsConsumed();
