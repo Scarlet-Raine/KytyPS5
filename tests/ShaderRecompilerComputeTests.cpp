@@ -16170,11 +16170,6 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
     resource = BasicArrayStorageTextureResource();
     descriptor = BasicArrayStorageTextureDescriptor();
     descriptor.fields[4] |= 1u << 16u;
-  } else if (std::strcmp(kind, "array-mip-view") == 0) {
-    resource = BasicArrayStorageTextureResource();
-    descriptor = BasicArrayStorageTextureDescriptor();
-    descriptor.fields[3] |= (1u << 12u) | (1u << 16u);
-    descriptor.fields[5] |= 1u << 4u;
   } else if (std::strcmp(kind, "reserved") == 0) {
     descriptor.fields[1] |= 1u << 29u;
   } else if (std::strcmp(kind, "uint-format") == 0) {
@@ -16384,6 +16379,23 @@ void CheckBasicStorageTextureDescriptor() {
           "PPSA21268 2D-array storage descriptor fixture is malformed");
   ValidateStorageTexture(BasicArrayStorageTextureResource(), array, 0x10000);
 
+  // A 2D-array storage image may bind a single non-base mip level, exactly
+  // like a plain 2D storage image. GTA SA (PPSA03524) hits this while
+  // generating mip level 1 of a render-target-tiled texture array; the host
+  // image carries the full mip chain and the view targets one level via
+  // ImageViewInfo::base_level, so the binding must be accepted.
+  auto array_mip_one = array;
+  array_mip_one.fields[3] |= (1u << 12u) | (1u << 16u);
+  array_mip_one.fields[5] |= 1u << 4u;
+  Require("BasicStorageTexture", "2D-array mip-view descriptor",
+          array_mip_one.BaseLevel() == 1 && array_mip_one.LastLevel() == 1 &&
+              array_mip_one.MaxMip() >= 1 && array_mip_one.BaseArray5() == 0 &&
+              array_mip_one.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray),
+          "2D-array mip-view storage descriptor fixture is malformed");
+  ValidateStorageTexture(BasicArrayStorageTextureResource(), array_mip_one,
+                         0x10000);
+
   const auto uint_array = BasicUintArrayStorageTextureDescriptor();
   Require("BasicStorageTexture", "uint 2D-array descriptor",
           uint_array.Base40() == 0x2017920000ull &&
@@ -16540,7 +16552,7 @@ void CheckBasicStorageTextureDescriptor() {
   for (const char *kind :
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
-        "reserved-swizzle", "array-base-out-of-range", "array-mip-view",
+        "reserved-swizzle", "array-base-out-of-range",
         "reserved", "uint-format", "uint-resource-float-format",
         "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +
