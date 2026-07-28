@@ -2556,6 +2556,16 @@ static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 	const auto      stack_top = reinterpret_cast<uintptr_t>(fiber->addr_context) +
 	                            static_cast<uintptr_t>(fiber->size_context);
 	auto            rsp       = (stack_top & ~static_cast<uintptr_t>(0x0f));
+
+	// Reserve a terminating root frame at the top of the fiber stack so a guest stack-unwinder
+	// that walks the rbp chain (e.g. Unreal Engine's backtrace, captured while running on a
+	// task-graph fiber) stops cleanly instead of dereferencing an unmapped saved-rbp. The main
+	// thread (RunEntry) and pthreads (RunOnGuestStack) already establish this; fibers must too.
+	rsp -= 2u * sizeof(uint64_t);
+	auto* guest_root_frame = reinterpret_cast<uint64_t*>(rsp);
+	guest_root_frame[0]    = 0;
+	guest_root_frame[1]    = 0;
+	const auto guest_rbp   = rsp;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	rsp -= 4u * sizeof(uint64_t);
 #endif
@@ -2563,6 +2573,7 @@ static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 	*reinterpret_cast<uint64_t*>(rsp) = 0;
 
 	ctx.rsp = rsp;
+	ctx.rbp = guest_rbp;
 	ctx.rip = reinterpret_cast<uint64_t>(&FiberStartTrampoline);
 
 	g_starting_fiber = fiber;
