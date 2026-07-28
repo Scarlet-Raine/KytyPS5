@@ -12,6 +12,12 @@ namespace {
 
 constexpr uint64_t AddressMask = 0x0000ffffffffffffull;
 
+// Storage/address buffer bindings must start at a device-aligned offset
+// (Vulkan minStorageBufferOffsetAlignment, at most 256). Rounding the address-resource binding
+// base down to this fixed bound keeps the host Vulkan offset aligned on every device; the delta is
+// folded back into specialized_base (guest_base - binding_base) so shader addresses are unchanged.
+constexpr uint64_t StorageBindingAlignment = 256;
+
 Decoder::ImageDimension DescriptorDimension(const DescriptorValue&       descriptor,
                                             Decoder::ImageDimension requested) {
 	const bool is_array = requested == Decoder::ImageDimension::Dim1DArray ||
@@ -301,7 +307,7 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 			if (address.kind == ResourceKind::Flat) {
 				binding_base = base & ~(FlatAddressWindowSize - 1u);
 			} else if (base >= before) {
-				binding_base = base - before;
+				binding_base = (base - before) & ~(StorageBindingAlignment - 1u);
 			}
 			next.addresses.push_back({base, binding_base});
 		} else {
