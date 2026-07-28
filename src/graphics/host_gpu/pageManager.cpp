@@ -624,9 +624,11 @@ bool PageManager::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noex
 			if (page.backing_writer == CurrentThread()) {
 				FailFast("backing writer faulted on its own reserved page");
 			}
-			if ((!page.resolving_read_write && access != PageFaultAccess::Write) ||
-			    (page.resolving_read_write && access != PageFaultAccess::Read &&
-			     access != PageFaultAccess::Write)) {
+			// Reads may arrive here as stale faults: the page is no-access while a
+			// write resolver (or backing writer) runs, so a CPU read raised in that
+			// window is valid and must wait the resolution out; the re-check below
+			// then resumes it once the restored mapping permits the access.
+			if (access != PageFaultAccess::Read && access != PageFaultAccess::Write) {
 				FailFast("fault access is incompatible with the active resolver");
 			}
 			waited = true;
@@ -648,6 +650,15 @@ bool PageManager::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noex
 			// page already permits the requested access. A genuinely read-only/no-access page still
 			// falls through to the guest exception path.
 			return allowed;
+		}
+		if (access == PageFaultAccess::Read && page.access_watchers == 0 &&
+		    Impl::AllowsAccess(fault_vaddr, access)) {
+			// A write-only watcher keeps its page READ_ONLY, so a read fault can
+			// only be stale here: it was raised while the page was still no-access
+			// (read/write-watched or mid-resolution) and lost the race for the
+			// late_read_pending hint to a concurrent reader. Resume it, mirroring
+			// the delayed-fault policy for unwatched pages above.
+			return true;
 		}
 		if ((access != PageFaultAccess::Read && access != PageFaultAccess::Write) ||
 		    (access == PageFaultAccess::Read && page.access_watchers == 0)) {
