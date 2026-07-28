@@ -1097,6 +1097,7 @@ void EmitFunction(EmitterState& state, const IR::Program& program) {
 	EmitPixelInputRegisters(state);
 	EmitVertexInputRegisters(state);
 	EmitStorageBufferOffsets(state);
+	EmitAddressBufferOffsets(state);
 	if (state.dispatcher_fallback) {
 		EmitDispatcherFunction(state, program);
 		state.builder.AddFunction({OpFunctionEnd});
