@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <fmt/format.h>
 #include <map>
@@ -772,6 +773,14 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	}
 
 	if (!IR::PatchSrtReads(ir, error) || !IR::TrackResources(ir, error)) {
+		// Resource tracking is the recurring frontier for GPU-built descriptors. Dump the
+		// decoded program once, on failure only, so the selection/branch feeding the failing
+		// descriptor can be identified without enabling the global shader log.
+		if (!options.early_dump) {
+			LOGF("%s resource tracking failed; decoded RDNA2:\n%s", GetDumpLabel(options),
+			     (decoded_dump.empty() ? Decoder::ProgramToString(decoded) : decoded_dump)
+			         .c_str());
+		}
 		return false;
 	}
 	if (options.stage == ShaderType::Vertex) {
@@ -818,6 +827,35 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	}
 	if (!IR::SpecializeResources(ir, resources, error)) {
 		return false;
+	}
+	// Diagnostic: a formatted buffer whose descriptor comes entirely from inline user SGPRs is a
+	// candidate programmable vertex fetch that embedded-fetch detection did not rewrite. Dump the
+	// decoded program once per such shader (bounded) so the detection gap can be characterized
+	// without enabling the global shader log.
+	if (!options.early_dump && options.stage == ShaderType::Vertex) {
+		static std::atomic<uint32_t> inline_fetch_dumps {0};
+		for (const auto& buffer: ir.info.buffers) {
+			if (!buffer.formatted) {
+				continue;
+			}
+			const auto* descriptor = IR::GetDescriptorSource(ir, buffer.source);
+			if (descriptor == nullptr || descriptor->dword_count == 0) {
+				continue;
+			}
+			bool all_user_data = true;
+			for (uint32_t k = 0; k < descriptor->dword_count && all_user_data; k++) {
+				const auto id = descriptor->dwords[k];
+				all_user_data = id < ir.provenance.values.size() &&
+				                ir.provenance.values[id].op == IR::ScalarValueOp::UserData;
+			}
+			if (all_user_data && inline_fetch_dumps.fetch_add(1, std::memory_order_relaxed) < 4) {
+				LOGF("%s inline formatted-buffer fetch candidate (source=%" PRIu32
+				     "); decoded RDNA2:\n%s",
+				     GetDumpLabel(options), buffer.source,
+				     (decoded_dump.empty() ? Decoder::ProgramToString(decoded) : decoded_dump)
+				         .c_str());
+			}
+		}
 	}
 
 	ShaderVertexInputInfo  default_vertex {};
