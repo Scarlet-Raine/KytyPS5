@@ -104,6 +104,10 @@ private:
 	[[nodiscard]] static bool ResolveOverlap(CacheRange& merged, CacheRange candidate) noexcept;
 	void Upload(CommandBuffer& command, Buffer& destination, uint64_t destination_offset,
 	            const void* source, uint64_t size);
+	// Uploads guest bytes read through the backing store (fault-free) rather than the guest VA, so
+	// it is safe to call while the FaultSafeCacheLock is held.
+	void UploadFromBacking(CommandBuffer& command, Buffer& destination, uint64_t destination_offset,
+	                       uint64_t guest_address, uint64_t size);
 	[[nodiscard]] CachedBuffer& GetOrCreateBuffer(CommandBuffer& command, uint64_t vaddr,
 	                                              uint64_t size);
 	[[nodiscard]] std::vector<DownloadRange> RecordDownloads(std::span<const DownloadCopy> copies);
