@@ -72,6 +72,13 @@ struct ValueKey {
 	auto operator<=>(const ValueKey&) const = default;
 };
 
+struct PhiKey {
+	uint32_t              pc = 0;
+	std::vector<uint32_t> args;
+
+	auto operator<=>(const PhiKey&) const = default;
+};
+
 struct DescriptorKey {
 	std::array<uint32_t, 8> dwords      = {};
 	uint32_t                dword_count = 0;
@@ -315,6 +322,20 @@ private:
 		return id;
 	}
 
+	uint32_t InternPhi(uint32_t pc, std::vector<uint32_t> args) {
+		const PhiKey key {pc, args};
+		if (const auto found = m_phis.find(key); found != m_phis.end()) {
+			return found->second;
+		}
+		ScalarValue node;
+		node.op       = ScalarValueOp::Phi;
+		node.pc       = pc;
+		node.phi_args = std::move(args);
+		const auto id  = AddValue(std::move(node));
+		m_phis.emplace(key, id);
+		return id;
+	}
+
 	uint32_t Constant(uint32_t value) { return InternValue({ScalarValueOp::Constant, 0, value}); }
 
 	static uint64_t VectorLaneKey(uint32_t reg, uint32_t lane) {
@@ -480,6 +501,25 @@ private:
 		return InternValue(std::move(node));
 	}
 
+	uint32_t Select(const Instruction& inst, const ScalarState& state, uint32_t first,
+	                uint32_t second) {
+		return InternPhi(inst.pc,
+		                 {OperandValue(inst.src[first], state), OperandValue(inst.src[second], state)});
+	}
+
+	uint32_t SelectPairPart(const Instruction& inst, const ScalarState& state, uint32_t first,
+	                        uint32_t second, uint32_t part) {
+		const auto operand_value = [&](uint32_t index) {
+			uint32_t reg = 0;
+			if (ScalarRegister(inst.src[index], reg)) {
+				return reg + part < ScalarRegisters ? state.regs[reg + part]
+				                                   : ScalarProvenance::Unknown;
+			}
+			return part == 0 ? OperandValue(inst.src[index], state) : Constant(0);
+		};
+		return InternPhi(inst.pc, {operand_value(first), operand_value(second)});
+	}
+
 	ScalarValueOp Operation(Opcode op) const {
 		switch (op) {
 			case Opcode::IAddU32:
@@ -596,6 +636,25 @@ private:
 				}
 				break;
 			}
+			case Opcode::SelectU32:
+				if (inst.src_count >= 3) {
+					value = Select(inst, before, 1, 2);
+				}
+				break;
+			case Opcode::SelectU64:
+				if (inst.src_count >= 3 && dst + 1 < ScalarRegisters) {
+					value               = SelectPairPart(inst, before, 1, 2, 0);
+					state.regs[dst + 1] = SelectPairPart(inst, before, 1, 2, 1);
+				}
+				break;
+			case Opcode::IMinI32:
+			case Opcode::IMaxI32:
+			case Opcode::UMinU32:
+			case Opcode::UMaxU32:
+				if (inst.src_count >= 2) {
+					value = Select(inst, before, 0, 1);
+				}
+				break;
 			case Opcode::BitFieldMaskU64:
 				value = Define(inst, ScalarValueOp::BitFieldMaskU64Low, before);
 				if (dst + 1 < ScalarRegisters) {
@@ -858,6 +917,7 @@ private:
 	std::vector<bool>                 m_queued;
 	std::deque<uint32_t>              m_work;
 	std::map<ValueKey, uint32_t>      m_values;
+	std::map<PhiKey, uint32_t>        m_phis;
 	std::map<DescriptorKey, uint32_t> m_descriptors;
 };
 

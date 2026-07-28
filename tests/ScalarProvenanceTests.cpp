@@ -351,6 +351,78 @@ void TestReadConstDefinition() {
 	      "ReadConst dynamic/immediate offset operand was lost");
 }
 
+void TestScalarSelectDefinition() {
+	Program program;
+	program.blocks.resize(1);
+	Instruction select;
+	select.pc        = 4;
+	select.op        = Opcode::SelectU32;
+	select.dst       = Sgpr(0);
+	select.src[0]    = Sgpr(20);
+	select.src[1]    = Imm(7);
+	select.src[2]    = Imm(9);
+	select.src_count = 3;
+	program.blocks[0].instructions = {select, BufferUse(8, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	const auto* source =
+	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
+	Check(source != nullptr, "scalar select descriptor source was not attached");
+	const auto& selected = Value(program, source->dwords[0]);
+	Check(selected.op == ScalarValueOp::Phi && selected.phi_args.size() == 2,
+	      "scalar select was not represented as a provenance alternative");
+	Check(Value(program, selected.phi_args[0]).op == ScalarValueOp::Constant &&
+	          Value(program, selected.phi_args[0]).imm == 7 &&
+	          Value(program, selected.phi_args[1]).op == ScalarValueOp::Constant &&
+	          Value(program, selected.phi_args[1]).imm == 9,
+		      "scalar select operands were not retained");
+}
+
+void TestScalarSelectLoopConvergence() {
+	Program program;
+	program.blocks.resize(2);
+	program.blocks[0].successors   = {1};
+	program.blocks[1].predecessors = {0, 1};
+	program.blocks[1].successors   = {1};
+	Instruction select;
+	select.pc        = 4;
+	select.op        = Opcode::SelectU32;
+	select.dst       = Sgpr(0);
+	select.src[0]    = Sgpr(0);
+	select.src[1]    = Imm(7);
+	select.src[2]    = Imm(9);
+	select.src_count = 3;
+	program.blocks[1].instructions = {select, BufferUse(8, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	Check(program.provenance.values.size() < 100,
+	      "scalar select loop created unbounded provenance values");
+}
+
+void TestScalarMinMaxDefinition() {
+	Program program;
+	program.blocks.resize(1);
+	Instruction min;
+	min.pc        = 4;
+	min.op        = Opcode::UMinU32;
+	min.dst       = Sgpr(0);
+	min.src[0]    = Imm(7);
+	min.src[1]    = Imm(9);
+	min.src_count = 2;
+	program.blocks[0].instructions = {min, BufferUse(8, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	const auto* source =
+	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
+	Check(source != nullptr, "scalar min/max descriptor source was not attached");
+	const auto& selected = Value(program, source->dwords[0]);
+	Check(selected.op == ScalarValueOp::Phi && selected.phi_args.size() == 2,
+	      "scalar min/max was not represented as an operand choice");
+}
+
 void TestReadConstBufferAndValueNumbering() {
 	Program program;
 	program.blocks.resize(1);
@@ -1050,6 +1122,9 @@ int main() {
 		TestWideMoveInvalidatesAndCopiesBothDwords();
 		TestScalarCarryChain();
 		TestReadConstDefinition();
+		TestScalarSelectDefinition();
+		TestScalarSelectLoopConvergence();
+		TestScalarMinMaxDefinition();
 		TestReadConstBufferAndValueNumbering();
 		TestReadLaneDescriptorSpill();
 		TestReadLaneVectorOverwriteInvalidatesSpill();

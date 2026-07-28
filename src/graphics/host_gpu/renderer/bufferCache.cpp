@@ -1149,10 +1149,14 @@ void BufferCache::ValidateGpuAccess(uint64_t vaddr, uint64_t size, bool is_read,
 		EXIT("BufferCache: invalid GPU access request\n");
 	}
 	if (is_read && !m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Read)) {
-		EXIT("BufferCache: GPU-read access denied\n");
+		EXIT("BufferCache: GPU-read access denied addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " mapped=%d tracked=%d\n",
+		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr));
 	}
 	if (is_written && !m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Write)) {
-		EXIT("BufferCache: GPU-write access denied\n");
+		EXIT("BufferCache: GPU-write access denied addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " mapped=%d tracked=%d\n",
+		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr));
 	}
 }
 
