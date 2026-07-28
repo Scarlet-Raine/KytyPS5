@@ -1002,6 +1002,14 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 				     args.start_vertex_location, args.start_instance_location);
 			}
 		}
+		// A GPU-driven indirect draw can resolve to zero work: compute culling
+		// commonly writes instance_count = 0 (or a zero vertex count) into the
+		// args buffer to drop a batch. Unlike a direct DRAW_INDEX_AUTO, where a
+		// zero instance count means "use the default of 1", an indirect count of
+		// zero is a real value and must render nothing.
+		if (args.instance_count == 0u || args.vertex_count_per_instance == 0u) {
+			return;
+		}
 		DrawIndexAuto(args.vertex_count_per_instance, 0, 0, args.instance_count,
 		              args.start_vertex_location, args.start_instance_location);
 		return;
@@ -1043,6 +1051,9 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 		}
 	}
 
+	if (args.instance_count == 0u || index_count == 0u) {
+		return;
+	}
 	DrawIndex(index_count, index_addr, 0, 1, args.instance_count, nullptr, 0,
 	          static_cast<int32_t>(args.base_vertex_location), args.start_instance_location);
 }
@@ -1100,6 +1111,9 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 					     args->start_vertex_location, args->start_instance_location);
 				}
 			}
+			if (args->instance_count == 0u || args->vertex_count_per_instance == 0u) {
+				continue;
+			}
 			DrawIndexAuto(args->vertex_count_per_instance, 0, 0, args->instance_count,
 			              args->start_vertex_location, args->start_instance_location);
 			continue;
@@ -1142,6 +1156,9 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			}
 		}
 
+		if (args->instance_count == 0u || index_count == 0u) {
+			continue;
+		}
 		DrawIndex(index_count, index_addr, 0, 1, args->instance_count, nullptr, 0,
 		          static_cast<int32_t>(args->base_vertex_location), args->start_instance_location);
 	}
