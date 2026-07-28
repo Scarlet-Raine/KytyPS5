@@ -25,6 +25,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BindingLayout.h"
 #include "graphics/shader/recompiler/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ScalarProvenance.h"
 #include "graphics/shader/recompiler/ShaderIR.h"
 #include "graphics/shader/shader.h"
 
@@ -73,9 +74,31 @@ static Prospero::ImageType TextureBaseType(Prospero::ImageType type) {
 	}
 }
 
+// A descriptor whose four dwords all come directly from inline user SGPRs. The GTA/UE shader
+// family passes some vertex-fetch V#s this way; the fetch-shader ABI that would populate those
+// registers is emulated away, so on an unrecognized fetch they hold non-descriptor data.
+static bool IsInlineUserDataDescriptor(const ShaderRecompiler::IR::Program& program,
+                                       uint32_t                             source) {
+	const auto* srt = ShaderRecompiler::IR::GetDescriptorSource(program, source);
+	if (srt == nullptr || srt->dword_count == 0) {
+		return false;
+	}
+	for (uint32_t i = 0; i < srt->dword_count; i++) {
+		const auto id = srt->dwords[i];
+		if (id >= program.provenance.values.size() ||
+		    program.provenance.values[id].op != ShaderRecompiler::IR::ScalarValueOp::UserData) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& command_buffer,
                                       const ShaderBufferResource&                 descriptor,
                                       const ShaderRecompiler::IR::BufferResource& resource,
+                                      const ShaderRecompiler::IR::Program&        program,
+                                      uint64_t                                    shader_hash,
+                                      uint32_t                                    buffer_index,
                                       uint32_t&                                   buffer_offset) {
 	BufferView result;
 	buffer_offset = 0;
@@ -94,11 +117,47 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 	const auto& graphics  = context.GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
 	const auto max_range = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
+	// An unrecognized inline-user-SGPR programmable vertex fetch: its V# registers are populated by
+	// the fetch-shader ABI the recompiler emulates away, so they decode to a non-descriptor range.
+	// Match hardware (an invalid/unpopulated vertex fetch reads 0) by binding the null buffer, but
+	// only for this exact shape; every other descriptor keeps the strict guard below.
+	const bool inline_fetch =
+	    resource.formatted && IsInlineUserDataDescriptor(program, resource.source);
 	if (alignment == 0 || size > max_range) {
+		if (inline_fetch && alignment != 0) {
+			BindNullStorageBuffer(context, result);
+			return result;
+		}
+		// Diagnostic-only: a runtime-materialized storage descriptor decoded to an impossible
+		// footprint. Trace how each descriptor dword was produced so the failing scalar source
+		// (SRT read, user SGPR, or arithmetic) can be identified without relaxing the guard.
+		std::string provenance_detail;
+		const auto* srt = ShaderRecompiler::IR::GetDescriptorSource(program, resource.source);
+		if (srt != nullptr) {
+			for (uint32_t d = 0; d < srt->dword_count; d++) {
+				provenance_detail += fmt::format(
+				    " d{}[val={}]={}", d, srt->dwords[d],
+				    ShaderRecompiler::IR::DescribeScalarProvenance(program.provenance,
+				                                                   srt->dwords[d]));
+			}
+		} else {
+			provenance_detail = " (no descriptor source)";
+		}
 		EXIT("storage buffer range or device alignment is unsupported: addr=0x%016" PRIx64
 		     " stride=%" PRIu32 " records=%" PRIu64 " size=%" PRIu64
-		     " alignment=%" PRIu64 " max_range=%" PRIu64 "\n",
-		     address, stride, records, size, alignment, max_range);
+		     " alignment=%" PRIu64 " max_range=%" PRIu64
+		     " shader=0x%016" PRIx64 " buffer=%" PRIu32 " source=%" PRIu32
+		     " raw={%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 "} prov:%s\n",
+		     address, stride, records, size, alignment, max_range, shader_hash, buffer_index,
+		     resource.source, descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
+		     descriptor.fields[3], provenance_detail.c_str());
+	}
+	// Same hardware-tolerant fallback for an inline vertex-fetch V# whose base is not a readable
+	// guest mapping: bind null rather than letting the buffer cache abort on the missing GPU-read
+	// range. The strict GPU-access guard still applies to every genuinely-bound buffer.
+	if (inline_fetch && !HostMemoryRangeIsReadable(address, size)) {
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	auto binding = context.GetBufferCache().ObtainBuffer(
 	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
@@ -143,7 +202,15 @@ NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
-		EXIT("address resource range or alignment is unsupported\n");
+		EXIT("address resource range or alignment is unsupported: base=0x%016" PRIx64
+		     " size=0x%016" PRIx64 " alignment=%" PRIu64 " max_range=%" PRIu64
+		     " offset=0x%016" PRIx64 " kind=%d flat=%d\n",
+		     address.binding_base, size, alignment,
+		     static_cast<uint64_t>(
+		         graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange),
+		     BufferCache::GetBufferOffset(address.binding_base),
+		     static_cast<int>(resource.kind),
+		     resource.kind == ShaderRecompiler::IR::ResourceKind::Flat ? 1 : 0);
 	}
 	auto binding =
 	    context.GetBufferCache().ObtainBuffer(command_buffer, address.binding_base, size);
@@ -799,7 +866,8 @@ void RenderExecutor::RebindBuffers(CommandBuffer&                     buffer,
 		CopyNativeDescriptor(snapshot.buffers[i], descriptor.fields);
 		uint32_t buffer_offset = 0;
 		resources.buffers.push_back(NativeStorageBuffer(m_context, buffer, descriptor,
-		                                                program.info.buffers[i], buffer_offset));
+		                                                program.info.buffers[i], program,
+		                                                program.shader_hash, i, buffer_offset));
 		const auto dword = layout.buffer_offset_dword + i / 4u;
 		const auto shift = (i % 4u) * 8u;
 		prepared.user_data[dword] |= buffer_offset << shift;
