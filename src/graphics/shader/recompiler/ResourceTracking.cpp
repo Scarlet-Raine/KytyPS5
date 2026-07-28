@@ -218,19 +218,38 @@ private:
 			std::vector<uint32_t> path;
 			if (ContainsUnknown(m_program.provenance, descriptor->dwords[i], visited, path)) {
 				const auto  value = descriptor->dwords[i];
-				std::string chain;
-				for (const auto id: path) {
-					const auto op = id < m_program.provenance.values.size()
-					                    ? static_cast<uint32_t>(m_program.provenance.values[id].op)
-					                    : UINT32_MAX;
-					chain += fmt::format("{}{}:{}({})", chain.empty() ? "" : " -> ", id, op,
-					                     ScalarValueToString(m_program.provenance, id));
+				const auto terminal = path.empty() ? ScalarProvenance::Unknown : path.back();
+				const auto terminal_op = terminal < m_program.provenance.values.size()
+				                             ? static_cast<uint32_t>(m_program.provenance.values[terminal].op)
+				                             : UINT32_MAX;
+				const auto terminal_pc = terminal < m_program.provenance.values.size()
+				                             ? m_program.provenance.values[terminal].pc
+				                             : 0u;
+				std::string unknown_destinations;
+				uint32_t    unknown_count = 0;
+				for (const auto& block: m_program.blocks) {
+					for (const auto& candidate: block.instructions) {
+						if (candidate.scalar_value != ScalarProvenance::Unknown ||
+						    candidate.dst.kind != OperandKind::Register ||
+						    candidate.dst.reg.file != RegisterFile::Scalar) {
+							continue;
+						}
+						if (unknown_count < 8) {
+							unknown_destinations += fmt::format(
+							    " 0x{:x}/op{}", candidate.pc,
+							    static_cast<uint32_t>(candidate.op));
+						}
+						unknown_count++;
+					}
 				}
 				return Fail(
 				    pc, error,
 				    fmt::format(
-				        "descriptor source {} dword {} contains an unknown value {} ({}) path {}",
-				        source, i, value, ScalarValueToString(m_program.provenance, value), chain));
+				        "descriptor source {} dword {} contains an unknown value {} ({}) terminal {}:{}@0x{:x}({}) unresolved scalar destinations{}{}",
+				        source, i, value, ScalarValueToString(m_program.provenance, value), terminal,
+				        terminal_op, terminal_pc,
+				        ScalarValueToString(m_program.provenance, terminal), unknown_destinations,
+				        unknown_count > 8 ? " ..." : ""));
 			}
 		}
 		const auto dynamic =
@@ -239,21 +258,9 @@ private:
 		if (dynamic && !IsLoopInvariantDescriptor(m_program.provenance, *descriptor)) {
 			std::string detail;
 			for (uint32_t i = 0; i < descriptor->dword_count; i++) {
-				const auto id = descriptor->dwords[i];
-				detail +=
-				    fmt::format(" d{}={}({})", i, id,
-				                id < m_program.provenance.values.size()
-				                    ? static_cast<uint32_t>(m_program.provenance.values[id].op)
-				                    : UINT32_MAX);
-				if (id < m_program.provenance.values.size()) {
-					for (const auto arg: m_program.provenance.values[id].phi_args) {
-						detail += fmt::format(
-						    "/{}({})", arg,
-						    arg < m_program.provenance.values.size()
-						        ? static_cast<uint32_t>(m_program.provenance.values[arg].op)
-						        : UINT32_MAX);
-					}
-				}
+				detail += fmt::format(
+				    " d{}={}", i,
+				    DescribeScalarProvenance(m_program.provenance, descriptor->dwords[i]));
 			}
 			return Fail(pc, error,
 			            fmt::format("descriptor source {} requires unsupported GPU selection{}",
@@ -423,6 +430,15 @@ private:
 		}
 		if (!ValidateSource(inst.memory.resource_source, IsBuffer(inst) ? 4u : 8u, inst.pc,
 		                    error)) {
+			if (error != nullptr && IsBuffer(inst)) {
+				// Record how the failing buffer is accessed so a GPU-selected descriptor can be
+				// classified: raw (non-formatted) dword loads ignore the V# format/dst_sel word,
+				// so divergence confined to dword 3 is a no-op for addressing.
+				*error += fmt::format(" [op={} formatted={} typed={} scalar={}]",
+				                      static_cast<uint32_t>(inst.op), inst.memory.formatted,
+				                      inst.memory.typed,
+				                      inst.memory.kind == ResourceKind::ScalarBuffer);
+			}
 			return false;
 		}
 		const auto resource = IsBuffer(inst) ? AddBuffer(inst) : AddImage(inst);
