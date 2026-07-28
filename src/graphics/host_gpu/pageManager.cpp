@@ -645,7 +645,18 @@ bool PageManager::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noex
 		}
 		if ((access != PageFaultAccess::Read && access != PageFaultAccess::Write) ||
 		    (access == PageFaultAccess::Read && page.access_watchers == 0)) {
-			FailFast("fault access is incompatible with active page watchers");
+			char detail[256] {};
+			std::snprintf(detail, sizeof(detail),
+			              "fault access is incompatible with active page watchers "
+			              "(access=%d vaddr=0x%016" PRIx64 " page=0x%016" PRIx64
+			              " write_watchers=%u access_watchers=%u resolving=%d "
+			              "late_read=%d late_write=%d original_protection=%u)",
+			              static_cast<int>(access), fault_vaddr, PageStart(fault_vaddr),
+			              page.write_watchers, page.access_watchers,
+			              static_cast<int>(page.resolving),
+			              static_cast<int>(page.late_read_pending),
+			              static_cast<int>(page.late_write_pending), page.original_protection);
+			FailFast(detail);
 		}
 		page.resolving            = true;
 		page.resolving_read_write = page.access_watchers != 0;
