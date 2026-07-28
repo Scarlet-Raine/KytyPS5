@@ -177,8 +177,10 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 static BufferView
 NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
                     const ShaderRecompiler::IR::AddressResource&           resource,
-                    const ShaderRecompiler::IR::ResourceSnapshot::Address& address) {
+                    const ShaderRecompiler::IR::ResourceSnapshot::Address& address,
+                    uint32_t&                                              address_offset) {
 	BufferView result;
+	address_offset = 0;
 	if (address.binding_base == 0) {
 		BindNullStorageBuffer(context, result);
 		return result;
@@ -199,25 +201,31 @@ NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
 	}
 	const auto& graphics  = context.GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
-	if (alignment == 0 ||
-	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
-	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
-		EXIT("address resource range or alignment is unsupported: base=0x%016" PRIx64
-		     " size=0x%016" PRIx64 " alignment=%" PRIu64 " max_range=%" PRIu64
-		     " offset=0x%016" PRIx64 " kind=%d flat=%d\n",
-		     address.binding_base, size, alignment,
-		     static_cast<uint64_t>(
-		         graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange),
-		     BufferCache::GetBufferOffset(address.binding_base),
-		     static_cast<int>(resource.kind),
-		     resource.kind == ShaderRecompiler::IR::ResourceKind::Flat ? 1 : 0);
+	const auto  max_range = static_cast<uint64_t>(
+	    graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange);
+	if (alignment == 0 || size > max_range) {
+		EXIT("address resource range is unsupported: base=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " alignment=%" PRIu64 " max_range=%" PRIu64 "\n",
+		     address.binding_base, size, alignment, max_range);
 	}
 	auto binding =
 	    context.GetBufferCache().ObtainBuffer(command_buffer, address.binding_base, size);
-	result.owner  = std::move(binding.owner);
-	result.buffer = binding.buffer;
-	result.offset = binding.offset;
-	result.range  = static_cast<vk::DeviceSize>(size);
+	// The Vulkan descriptor offset must be a multiple of the device storage-buffer alignment, but a
+	// non-Flat address base can land mid-alignment. Bind at the aligned-down offset and report the
+	// sub-alignment byte adjustment; the shader re-adds it (EmitAddressBufferOffsets) so the access
+	// still targets the true base.
+	const auto aligned_offset = binding.offset - binding.offset % alignment;
+	const auto adjustment     = binding.offset - aligned_offset;
+	if (adjustment > 0xffu || size > max_range - adjustment) {
+		EXIT("address resource offset adjustment is unsupported: base=0x%016" PRIx64
+		     " offset=0x%016" PRIx64 " alignment=%" PRIu64 "\n",
+		     address.binding_base, binding.offset, alignment);
+	}
+	result.owner   = std::move(binding.owner);
+	result.buffer  = binding.buffer;
+	result.offset  = aligned_offset;
+	result.range   = static_cast<vk::DeviceSize>(size + adjustment);
+	address_offset = static_cast<uint32_t>(adjustment);
 	return result;
 }
 
@@ -875,8 +883,12 @@ void RenderExecutor::RebindBuffers(CommandBuffer&                     buffer,
 	resources.addresses.clear();
 	resources.addresses.reserve(program.info.addresses.size());
 	for (uint32_t i = 0; i < program.info.addresses.size(); i++) {
+		uint32_t address_offset = 0;
 		resources.addresses.push_back(NativeAddressBuffer(
-		    m_context, buffer, program.info.addresses[i], snapshot.addresses[i]));
+		    m_context, buffer, program.info.addresses[i], snapshot.addresses[i], address_offset));
+		const auto dword = layout.address_offset_dword + i / 4u;
+		const auto shift = (i % 4u) * 8u;
+		prepared.user_data[dword] |= address_offset << shift;
 	}
 }
 

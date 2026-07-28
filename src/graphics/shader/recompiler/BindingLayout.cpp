@@ -227,6 +227,12 @@ bool AllocateBindings(Program& program, const BindingLayoutOptions& options, std
 	}
 	next.buffer_offset_dword = static_cast<uint32_t>(next.user_data_registers.size());
 	next.buffer_offset_count = static_cast<uint32_t>(program.info.buffers.size());
+	// Address-memory descriptors follow the storage-buffer offsets in the shader-data region. Each
+	// carries a per-resource sub-alignment byte adjustment so the descriptor can be bound at a
+	// device-aligned offset (see NativeAddressBuffer / EmitAddressBufferOffsets).
+	next.address_offset_dword =
+	    next.buffer_offset_dword + (next.buffer_offset_count + 3u) / 4u;
+	next.address_offset_count = static_cast<uint32_t>(program.info.addresses.size());
 
 	if (!program.info.buffers.empty()) {
 		std::vector<uint32_t> resources(program.info.buffers.size());
