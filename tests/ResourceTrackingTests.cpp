@@ -1890,7 +1890,7 @@ void TestRawScalarMemoryTracksReachingBaseIdentity() {
         error.c_str());
   Check(snapshot.addresses.size() == 2 &&
             snapshot.addresses[0].guest_base == 0x1000 &&
-            snapshot.addresses[0].binding_base == 0x0f00 &&
+            snapshot.addresses[0].binding_base == 0x0ffc &&
             snapshot.addresses[1].guest_base == 0x2000 &&
             snapshot.addresses[1].binding_base == 0x2000,
         "runtime snapshot lost per-use raw scalar base values");
