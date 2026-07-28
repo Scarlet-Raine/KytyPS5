@@ -98,15 +98,17 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 	}
 	const auto& graphics  = context.GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
-	if (alignment == 0 ||
-	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
-		EXIT("storage buffer range or device alignment is unsupported\n");
+	const auto max_range = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
+	if (alignment == 0 || size > max_range) {
+		EXIT("storage buffer range or device alignment is unsupported: addr=0x%016" PRIx64
+		     " stride=%" PRIu32 " records=%" PRIu64 " size=%" PRIu64
+		     " alignment=%" PRIu64 " max_range=%" PRIu64 "\n",
+		     address, stride, records, size, alignment, max_range);
 	}
 	auto binding = context.GetBufferCache().ObtainBuffer(
 	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
 	const auto aligned_offset = binding.offset - binding.offset % alignment;
 	const auto adjustment     = binding.offset - aligned_offset;
-	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
 	if (adjustment % sizeof(uint32_t) != 0 || adjustment >= 256 || size > max_range - adjustment) {
 		EXIT("storage buffer offset adjustment is unsupported\n");
 	}
