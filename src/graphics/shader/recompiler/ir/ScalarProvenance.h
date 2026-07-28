@@ -15,6 +15,11 @@ bool                   DescriptorSourceResolved(const Program& program, uint32_t
 
 std::string ScalarValueToString(const ScalarProvenance& provenance, uint32_t value);
 
+// Renders the full provenance expression tree feeding a scalar value, bounded by max_nodes.
+// Diagnostic-only: used to explain how a runtime-materialized descriptor dword was produced.
+std::string DescribeScalarProvenance(const ScalarProvenance& provenance, uint32_t value,
+                                     uint32_t max_nodes = 64);
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_SCALARPROVENANCE_H_ */

@@ -24,12 +24,18 @@ uint32_t ScalarValueArgCount(ScalarValueOp op) {
 		case ScalarValueOp::ShiftRightArithmetic:
 		case ScalarValueOp::BitFieldMaskU32:
 		case ScalarValueOp::BitFieldMaskU64Low:
-		case ScalarValueOp::BitFieldMaskU64High: return 2;
+		case ScalarValueOp::BitFieldMaskU64High:
+		case ScalarValueOp::BitFieldExtractU32: return 2;
+		case ScalarValueOp::BitFieldExtractU64Low:
+		case ScalarValueOp::BitFieldExtractU64High: return 3;
 		case ScalarValueOp::AddCarry:
 		case ScalarValueOp::Carry:
 		case ScalarValueOp::SubBorrow:
 		case ScalarValueOp::Borrow:
 		case ScalarValueOp::Add3:
+		case ScalarValueOp::AndOr:
+		case ScalarValueOp::Or3:
+		case ScalarValueOp::Xor3: return 3;
 		case ScalarValueOp::ShiftLeftAdd:
 		case ScalarValueOp::ShiftLeftAddCarry:
 		case ScalarValueOp::AddShiftLeft:
@@ -37,6 +43,11 @@ uint32_t ScalarValueArgCount(ScalarValueOp op) {
 		case ScalarValueOp::ShiftLeftOr:
 		case ScalarValueOp::ReadConst: return 3;
 		case ScalarValueOp::ReadConstBuffer: return 5;
+		case ScalarValueOp::Nand:
+		case ScalarValueOp::Nor:
+		case ScalarValueOp::Xnor: return 2;
+		case ScalarValueOp::Compare: return 2;
+		case ScalarValueOp::Select: return 3;
 		default: return 0;
 	}
 }
@@ -387,6 +398,39 @@ private:
 		return InternValue(std::move(node));
 	}
 
+	// Scalar comparisons that write SCC. Returns true and the ScalarCompareKind for the modeled
+	// 32-bit integer comparisons; other comparisons leave SCC unresolved (conservative).
+	static bool CompareKind(Opcode op, ScalarCompareKind& kind) {
+		switch (op) {
+			case Opcode::CompareEqU32: kind = ScalarCompareKind::Eq; return true;
+			case Opcode::CompareNeU32: kind = ScalarCompareKind::Ne; return true;
+			case Opcode::CompareLtU32: kind = ScalarCompareKind::LtU; return true;
+			case Opcode::CompareLeU32: kind = ScalarCompareKind::LeU; return true;
+			case Opcode::CompareGtU32: kind = ScalarCompareKind::GtU; return true;
+			case Opcode::CompareGeU32: kind = ScalarCompareKind::GeU; return true;
+			case Opcode::CompareEqI32: kind = ScalarCompareKind::Eq; return true;
+			case Opcode::CompareNeI32: kind = ScalarCompareKind::Ne; return true;
+			case Opcode::CompareLtI32: kind = ScalarCompareKind::LtI; return true;
+			case Opcode::CompareLeI32: kind = ScalarCompareKind::LeI; return true;
+			case Opcode::CompareGtI32: kind = ScalarCompareKind::GtI; return true;
+			case Opcode::CompareGeI32: kind = ScalarCompareKind::GeI; return true;
+			default: return false;
+		}
+	}
+
+	uint32_t DefineCompare(const Instruction& inst, const ScalarState& state,
+	                       ScalarCompareKind kind) {
+		ScalarValue node;
+		node.op  = ScalarValueOp::Compare;
+		node.pc  = inst.pc;
+		node.imm = static_cast<uint32_t>(kind);
+		node.args[0] =
+		    inst.src_count > 0 ? OperandValue(inst.src[0], state) : ScalarProvenance::Unknown;
+		node.args[1] =
+		    inst.src_count > 1 ? OperandValue(inst.src[1], state) : ScalarProvenance::Unknown;
+		return InternValue(std::move(node));
+	}
+
 	bool ConstantOperand(const Operand& operand, const ScalarState& state, uint32_t& value) {
 		const auto id = OperandValue(operand, state);
 		if (id >= m_graph.values.size() || m_graph.values[id].op != ScalarValueOp::Constant) {
@@ -408,6 +452,16 @@ private:
 		}
 		const auto found = state.vector_lanes.find(
 		    VectorLaneKey(inst.src[0].reg.index, lane % m_program.wave_size));
+		return found != state.vector_lanes.end() ? found->second : ScalarProvenance::Unknown;
+	}
+
+	uint32_t ReadFirstVectorLane(const Instruction& inst, const ScalarState& state) {
+		if (inst.src_count < 1 || inst.src[0].kind != OperandKind::Register ||
+		    inst.src[0].reg.file != RegisterFile::Vector ||
+		    (m_program.wave_size != 32 && m_program.wave_size != 64)) {
+			return ScalarProvenance::Unknown;
+		}
+		const auto found = state.vector_lanes.find(VectorLaneKey(inst.src[0].reg.index, 0));
 		return found != state.vector_lanes.end() ? found->second : ScalarProvenance::Unknown;
 	}
 
@@ -507,17 +561,41 @@ private:
 		                 {OperandValue(inst.src[first], state), OperandValue(inst.src[second], state)});
 	}
 
-	uint32_t SelectPairPart(const Instruction& inst, const ScalarState& state, uint32_t first,
-	                        uint32_t second, uint32_t part) {
-		const auto operand_value = [&](uint32_t index) {
+	// s_cselect: src[0]=SCC condition, src[1]=value-if-true, src[2]=value-if-false. Modeled as a
+	// Select that carries the condition so it resolves to a concrete value at evaluation, rather
+	// than a Phi that would require both arms to be equal.
+	uint32_t SelectConditional(const Instruction& inst, const ScalarState& state, uint32_t part) {
+		const auto arm = [&](uint32_t index) {
 			uint32_t reg = 0;
 			if (ScalarRegister(inst.src[index], reg)) {
 				return reg + part < ScalarRegisters ? state.regs[reg + part]
-				                                   : ScalarProvenance::Unknown;
+				                                    : ScalarProvenance::Unknown;
 			}
 			return part == 0 ? OperandValue(inst.src[index], state) : Constant(0);
 		};
-		return InternPhi(inst.pc, {operand_value(first), operand_value(second)});
+		ScalarValue node;
+		node.op      = ScalarValueOp::Select;
+		node.pc      = inst.pc;
+		node.args[0] = OperandValue(inst.src[0], state);
+		node.args[1] = arm(1);
+		node.args[2] = arm(2);
+		return InternValue(std::move(node));
+	}
+
+	uint32_t DefineBitFieldExtractU64(const Instruction& inst, const ScalarState& state,
+	                                  ScalarValueOp op) {
+		uint32_t src = 0;
+		if (inst.src_count < 2 || !ScalarRegister(inst.src[0], src) ||
+		    src + 1 >= ScalarRegisters) {
+			return ScalarProvenance::Unknown;
+		}
+		ScalarValue node;
+		node.op     = op;
+		node.pc     = inst.pc;
+		node.args[0] = state.regs[src];
+		node.args[1] = state.regs[src + 1];
+		node.args[2] = OperandValue(inst.src[1], state);
+		return InternValue(std::move(node));
 	}
 
 	ScalarValueOp Operation(Opcode op) const {
@@ -542,6 +620,12 @@ private:
 			case Opcode::ShiftRightArithmeticI32: return ScalarValueOp::ShiftRightArithmetic;
 			case Opcode::BitFieldMaskU32: return ScalarValueOp::BitFieldMaskU32;
 			case Opcode::IAdd3U32: return ScalarValueOp::Add3;
+			case Opcode::BitwiseAndOrU32: return ScalarValueOp::AndOr;
+			case Opcode::BitwiseOr3U32: return ScalarValueOp::Or3;
+			case Opcode::BitwiseXor3U32: return ScalarValueOp::Xor3;
+			case Opcode::BitwiseNandU32: return ScalarValueOp::Nand;
+			case Opcode::BitwiseNorU32: return ScalarValueOp::Nor;
+			case Opcode::BitwiseXnorU32: return ScalarValueOp::Xnor;
 			case Opcode::ScalarShiftLeftAddCarryU32:
 			case Opcode::ShiftLeftAddU32: return ScalarValueOp::ShiftLeftAdd;
 			case Opcode::AddShiftLeftU32: return ScalarValueOp::AddShiftLeft;
@@ -567,9 +651,14 @@ private:
 
 	void WriteDestination(const Instruction& inst, ScalarState& state) {
 		if (inst.dst.kind == OperandKind::Register && inst.dst.reg.file == RegisterFile::Scc) {
-			state.scc = inst.op == Opcode::MoveU32 && inst.src_count != 0
-			                ? OperandValue(inst.src[0], state)
-			                : ScalarProvenance::Unknown;
+			ScalarCompareKind kind {};
+			if (CompareKind(inst.op, kind)) {
+				state.scc = DefineCompare(inst, state, kind);
+			} else {
+				state.scc = inst.op == Opcode::MoveU32 && inst.src_count != 0
+				                ? OperandValue(inst.src[0], state)
+				                : ScalarProvenance::Unknown;
+			}
 			return;
 		}
 		if (inst.dst.kind == OperandKind::Register && inst.dst.reg.file == RegisterFile::M0) {
@@ -638,13 +727,13 @@ private:
 			}
 			case Opcode::SelectU32:
 				if (inst.src_count >= 3) {
-					value = Select(inst, before, 1, 2);
+					value = SelectConditional(inst, before, 0);
 				}
 				break;
 			case Opcode::SelectU64:
 				if (inst.src_count >= 3 && dst + 1 < ScalarRegisters) {
-					value               = SelectPairPart(inst, before, 1, 2, 0);
-					state.regs[dst + 1] = SelectPairPart(inst, before, 1, 2, 1);
+					value               = SelectConditional(inst, before, 0);
+					state.regs[dst + 1] = SelectConditional(inst, before, 1);
 				}
 				break;
 			case Opcode::IMinI32:
@@ -661,8 +750,21 @@ private:
 					state.regs[dst + 1] = Define(inst, ScalarValueOp::BitFieldMaskU64High, before);
 				}
 				break;
+			case Opcode::BitFieldExtractU32:
+				if (inst.src_count >= 2) {
+					value = Define(inst, ScalarValueOp::BitFieldExtractU32, before);
+				}
+				break;
+			case Opcode::BitFieldExtractU64:
+				value = DefineBitFieldExtractU64(inst, before, ScalarValueOp::BitFieldExtractU64Low);
+				if (dst + 1 < ScalarRegisters) {
+					state.regs[dst + 1] =
+					    DefineBitFieldExtractU64(inst, before, ScalarValueOp::BitFieldExtractU64High);
+				}
+				break;
 			case Opcode::SLoadDword: value = ReadConst(inst, before, false); break;
 			case Opcode::SBufferLoadDword: value = ReadConst(inst, before, true); break;
+			case Opcode::ReadFirstLaneU32: value = ReadFirstVectorLane(inst, before); break;
 			case Opcode::ReadLaneU32: value = ReadVectorLane(inst, before); break;
 			default: {
 				const auto op = Operation(inst.op);
@@ -994,10 +1096,143 @@ std::string ScalarValueToString(const ScalarProvenance& provenance, uint32_t val
 			return fmt::format("read_const_buffer({}, {}, {}, {}, {}, +{})", node.args[0],
 			                   node.args[1], node.args[2], node.args[3], node.args[4], node.imm);
 		case ScalarValueOp::Phi: return fmt::format("phi{}", value);
+		case ScalarValueOp::Select:
+			return fmt::format("select({}, {}, {})", node.args[0], node.args[1], node.args[2]);
+		case ScalarValueOp::Compare:
+			return fmt::format("cmp{}({}, {})", node.imm, node.args[0], node.args[1]);
 		case ScalarValueOp::BitFieldMaskU32:
 			return fmt::format("bfm_u32({}, {})", node.args[0], node.args[1]);
 		default: return fmt::format("value{}", value);
 	}
+}
+
+static const char* ScalarOpName(ScalarValueOp op) {
+	switch (op) {
+		case ScalarValueOp::Undefined: return "undef";
+		case ScalarValueOp::Unknown: return "unknown";
+		case ScalarValueOp::UserData: return "ud";
+		case ScalarValueOp::Constant: return "const";
+		case ScalarValueOp::PcRelativeLow: return "pc_lo";
+		case ScalarValueOp::PcRelativeHigh: return "pc_hi";
+		case ScalarValueOp::Add: return "add";
+		case ScalarValueOp::AddCarry: return "addc";
+		case ScalarValueOp::Carry: return "carry";
+		case ScalarValueOp::Sub: return "sub";
+		case ScalarValueOp::SubBorrow: return "subb";
+		case ScalarValueOp::Borrow: return "borrow";
+		case ScalarValueOp::Mul: return "mul";
+		case ScalarValueOp::And: return "and";
+		case ScalarValueOp::AndNot: return "andnot";
+		case ScalarValueOp::Or: return "or";
+		case ScalarValueOp::OrNot: return "ornot";
+		case ScalarValueOp::Xor: return "xor";
+		case ScalarValueOp::Not: return "not";
+		case ScalarValueOp::ShiftLeft: return "shl";
+		case ScalarValueOp::ShiftRight: return "shr";
+		case ScalarValueOp::ShiftRightArithmetic: return "sar";
+		case ScalarValueOp::BitFieldMaskU32: return "bfm_u32";
+		case ScalarValueOp::BitFieldMaskU64Low: return "bfm_u64_lo";
+		case ScalarValueOp::BitFieldMaskU64High: return "bfm_u64_hi";
+		case ScalarValueOp::BitFieldExtractU32: return "bfe_u32";
+		case ScalarValueOp::BitFieldExtractU64Low: return "bfe_u64_lo";
+		case ScalarValueOp::BitFieldExtractU64High: return "bfe_u64_hi";
+		case ScalarValueOp::Add3: return "add3";
+		case ScalarValueOp::AndOr: return "andor";
+		case ScalarValueOp::Or3: return "or3";
+		case ScalarValueOp::Xor3: return "xor3";
+		case ScalarValueOp::Nand: return "nand";
+		case ScalarValueOp::Nor: return "nor";
+		case ScalarValueOp::Xnor: return "xnor";
+		case ScalarValueOp::ShiftLeftAdd: return "shl_add";
+		case ScalarValueOp::ShiftLeftAddCarry: return "shl_addc";
+		case ScalarValueOp::AddShiftLeft: return "add_shl";
+		case ScalarValueOp::XorAdd: return "xor_add";
+		case ScalarValueOp::ShiftLeftOr: return "shl_or";
+		case ScalarValueOp::ReadConst: return "read_const";
+		case ScalarValueOp::ReadConstBuffer: return "read_const_buffer";
+		case ScalarValueOp::Phi: return "phi";
+		case ScalarValueOp::Select: return "select";
+		case ScalarValueOp::Compare: return "cmp";
+		default: return "op";
+	}
+}
+
+static void DescribeScalarProvenanceImpl(const ScalarProvenance& provenance, uint32_t id,
+                                         uint32_t depth, uint32_t& budget, std::string& out) {
+	if (budget == 0) {
+		out += "..";
+		return;
+	}
+	--budget;
+	if (id >= provenance.values.size()) {
+		out += fmt::format("bad{}", id);
+		return;
+	}
+	const auto& node = provenance.values[id];
+	out += fmt::format("{}#{}", ScalarOpName(node.op), id);
+	switch (node.op) {
+		case ScalarValueOp::UserData: out += fmt::format("={}", node.imm); return;
+		case ScalarValueOp::Constant: out += fmt::format("=0x{:08x}", node.imm); return;
+		case ScalarValueOp::PcRelativeLow:
+		case ScalarValueOp::PcRelativeHigh: out += fmt::format("+0x{:x}", node.imm); return;
+		case ScalarValueOp::Undefined:
+		case ScalarValueOp::Unknown: return;
+		default: break;
+	}
+	if (depth >= 8) {
+		out += "(..)";
+		return;
+	}
+	if (node.op == ScalarValueOp::Phi) {
+		out += "{";
+		for (size_t k = 0; k < node.phi_args.size(); ++k) {
+			if (k != 0) {
+				out += "|";
+			}
+			if (budget == 0) {
+				out += "..";
+				break;
+			}
+			DescribeScalarProvenanceImpl(provenance, node.phi_args[k], depth + 1, budget, out);
+		}
+		out += "}";
+		return;
+	}
+	if (node.op == ScalarValueOp::ReadConst || node.op == ScalarValueOp::ReadConstBuffer) {
+		const auto offset_arg = node.op == ScalarValueOp::ReadConst ? node.args[2] : node.args[4];
+		out += fmt::format("@0x{:x}[base=", node.pc);
+		DescribeScalarProvenanceImpl(provenance, node.args[0], depth + 1, budget, out);
+		out += ":";
+		DescribeScalarProvenanceImpl(provenance, node.args[1], depth + 1, budget, out);
+		out += " off=";
+		DescribeScalarProvenanceImpl(provenance, offset_arg, depth + 1, budget, out);
+		out += fmt::format(" +0x{:x}]", node.imm);
+		return;
+	}
+	const auto argc = ScalarValueArgCount(node.op);
+	if (argc == 0) {
+		return;
+	}
+	out += "(";
+	for (uint32_t k = 0; k < argc; ++k) {
+		if (k != 0) {
+			out += ",";
+		}
+		if (budget == 0) {
+			out += "..";
+			break;
+		}
+		DescribeScalarProvenanceImpl(provenance, node.args[k], depth + 1, budget, out);
+	}
+	out += ")";
+}
+
+std::string DescribeScalarProvenance(const ScalarProvenance& provenance, uint32_t value,
+                                     uint32_t max_nodes) {
+	std::string out;
+	uint32_t    budget = max_nodes;
+	DescribeScalarProvenanceImpl(provenance, value, 0, budget, out);
+	return out;
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
