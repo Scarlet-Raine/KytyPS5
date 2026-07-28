@@ -341,9 +341,14 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const bool supported_swizzle =
 	    IsValidImageSwizzle(descriptor.DstSelXYZW()) &&
 	    (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) || !resource.read);
-	const bool supported_mip_view = descriptor.BaseLevel() == 0 || is_1d || is_2d;
+	// A storage binding may address a single non-base mip level (BaseLevel ==
+	// LastLevel is enforced below). The host image is created with the full mip
+	// chain and the view targets that one level via ImageViewInfo::base_level,
+	// which TextureViewInfo already resolves for array and volume images.
+	// Sampled bindings take the identical mip-layout/view path with no
+	// dimension-specific restriction, so storage bindings accept the same
+	// array/volume mip views instead of only 1D/2D.
 	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
-	       supported_mip_view &&
 	       descriptor.BaseLevel() == descriptor.LastLevel() &&
 	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
 	       supported_swizzle && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
