@@ -219,6 +219,21 @@ void EmitStorageBufferOffsets(EmitterState& state) {
 	}
 }
 
+// Per-address-resource sub-alignment byte adjustment (0-255). The address descriptor is bound at a
+// device-aligned offset, so this byte count is re-added to the buffer-relative address. Unlike the
+// storage-buffer offsets (dword-indexed, stored >>2), this is a raw byte offset applied to a byte
+// address, so the full byte is read.
+void EmitAddressBufferOffsets(EmitterState& state) {
+	for (uint32_t i = 0; i < state.program.bindings.address_offset_count; i++) {
+		const auto word = EmitShaderDataDwordLoad(
+		    state, state.program.bindings.address_offset_dword + i / 4u);
+		const auto shift = ConstantU32(state, (i % 4u) * 8u);
+		state.address_buffer_offsets[i] = EmitBinaryU32(
+		    state, OpBitwiseAnd,
+		    EmitBinaryU32(state, OpShiftRightLogical, word, shift), ConstantU32(state, 0xffu));
+	}
+}
+
 uint32_t EmitBufferAddressFromParts(EmitterState& state, const IR::Instruction& inst,
                                     uint32_t index, uint32_t offset, uint32_t soffset) {
 	const auto& mem           = inst.memory;
@@ -365,15 +380,23 @@ uint32_t EmitMemoryByteAddress(EmitterState& state, const IR::Instruction& inst,
 	if (mem.kind == IR::ResourceKind::Buffer) {
 		return EmitBufferByteAddress(state, inst, first_src, src_count);
 	}
+	uint32_t address = 0;
 	if (mem.kind == IR::ResourceKind::Flat ||
 	    ((mem.kind == IR::ResourceKind::Global || mem.kind == IR::ResourceKind::Scratch) &&
 	     state.program.info.addresses[mem.resource].source == IR::ScalarProvenance::Unknown)) {
-		return EmitFlatVirtualAddress(state, inst, first_src, src_count);
+		address = EmitFlatVirtualAddress(state, inst, first_src, src_count);
+	} else if (mem.kind == IR::ResourceKind::Global || mem.kind == IR::ResourceKind::Scratch) {
+		address = EmitRelativeAddress(state, inst, first_src, src_count);
+	} else {
+		address = EmitByteAddress(state, inst, first_src, src_count);
 	}
-	if (mem.kind == IR::ResourceKind::Global || mem.kind == IR::ResourceKind::Scratch) {
-		return EmitRelativeAddress(state, inst, first_src, src_count);
+	// Address-memory descriptors are bound at a device-aligned offset (NativeAddressBuffer); re-add
+	// the per-resource sub-alignment byte adjustment (0 when the base was already aligned) so the
+	// buffer-relative address targets the true guest base. Mirrors the storage-buffer offset path.
+	if (mem.resource < state.program.info.addresses.size()) {
+		address = EmitAddU32(state, address, state.address_buffer_offsets[mem.resource]);
 	}
-	return EmitByteAddress(state, inst, first_src, src_count);
+	return address;
 }
 
 uint32_t EmitDwordIndex(EmitterState& state, const IR::Instruction& inst, uint32_t first_src,
