@@ -21,23 +21,32 @@ namespace Libs::Graphics {
 namespace {
 
 thread_local const void* g_cache_lock_owner = nullptr;
+thread_local const char* g_cache_lock_label = nullptr;
 
 constexpr uint64_t MiB           = 1024 * 1024;
 constexpr uint64_t GdsBufferSize = 64 * 1024;
 
 class FaultSafeCacheLock final {
 public:
-	FaultSafeCacheLock(const void* owner, Common::Mutex& mutex): m_mutex(mutex) {
+	// label defaults to the enclosing function name at each call site, so a recursive acquisition
+	// reports exactly which locked operation re-entered which.
+	FaultSafeCacheLock(const void* owner, Common::Mutex& mutex,
+	                   const char* label = __builtin_FUNCTION())
+	    : m_mutex(mutex) {
 		if (g_cache_lock_owner != nullptr) {
-			EXIT("BufferCache: recursive cache lock acquisition\n");
+			EXIT("BufferCache: recursive cache lock acquisition (held by %s, attempted by %s)\n",
+			     g_cache_lock_label != nullptr ? g_cache_lock_label : "?",
+			     label != nullptr ? label : "?");
 		}
 		g_cache_lock_owner = owner;
+		g_cache_lock_label = label;
 		m_mutex.Lock();
 	}
 
 	~FaultSafeCacheLock() {
 		m_mutex.Unlock();
 		g_cache_lock_owner = nullptr;
+		g_cache_lock_label = nullptr;
 	}
 
 private:
@@ -77,6 +86,24 @@ void BufferCache::Upload(CommandBuffer& command, Buffer& destination, uint64_t d
 		bytes += chunk;
 		destination_offset += chunk;
 		size -= chunk;
+	}
+}
+
+void BufferCache::UploadFromBacking(CommandBuffer& command, Buffer& destination,
+                                    uint64_t destination_offset, uint64_t guest_address,
+                                    uint64_t size) {
+	// Read through the backing store instead of dereferencing the guest VA directly. A direct
+	// guest read can hit a page-manager-protected page and fault while the FaultSafeCacheLock is
+	// held, whose handler re-enters the buffer cache and trips the recursive-lock guard.
+	std::array<uint8_t, 64 * 1024> chunk;
+	uint64_t                       copied = 0;
+	while (copied < size) {
+		const auto bytes = std::min<uint64_t>(size - copied, chunk.size());
+		if (!Libs::LibKernel::Memory::TryReadBacking(guest_address + copied, chunk.data(), bytes)) {
+			EXIT("BufferCache: failed to read guest backing for buffer upload\n");
+		}
+		Upload(command, destination, destination_offset + copied, chunk.data(), bytes);
+		copied += bytes;
 	}
 }
 
@@ -618,8 +645,8 @@ BufferCache::CachedBuffer& BufferCache::GetOrCreateBuffer(CommandBuffer& command
 		    },
 		    [&]() noexcept {
 			    for (const auto& [address, bytes]: uploads) {
-				    Upload(command, *old.buffer, old.buffer->Offset(address),
-				           reinterpret_cast<const void*>(address), bytes);
+				    UploadFromBacking(command, *old.buffer, old.buffer->Offset(address), address,
+				                      bytes);
 			    }
 		    });
 	}
@@ -678,8 +705,8 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 	    [&](uint64_t address, uint64_t bytes) noexcept { uploads.emplace_back(address, bytes); },
 	    [&]() noexcept {
 		    for (const auto& [address, bytes]: uploads) {
-			    Upload(command, *cached.buffer, cached.buffer->Offset(address),
-			           reinterpret_cast<const void*>(address), bytes);
+			    UploadFromBacking(command, *cached.buffer, cached.buffer->Offset(address), address,
+			                      bytes);
 		    }
 	    });
 	RefreshInvalidatedRanges(command, cached, vaddr, size, is_read);
