@@ -87,6 +87,33 @@ bool ApplyOperation(ScalarValueOp op, const std::array<uint32_t, 3>& args, uint3
 			                                                 : static_cast<uint32_t>(value >> 32u);
 			break;
 		}
+		case ScalarValueOp::BitFieldExtractU32: {
+			const auto offset = args[1] & 31u;
+			const auto count  = (args[1] >> 16u) & 127u;
+			if (count == 0 || offset >= 32u) {
+				result = 0;
+			} else if (count >= 32u - offset) {
+				result = args[0] >> offset;
+			} else {
+				result = (args[0] >> offset) & ((uint32_t {1} << count) - 1u);
+			}
+			break;
+		}
+		case ScalarValueOp::BitFieldExtractU64Low:
+		case ScalarValueOp::BitFieldExtractU64High: {
+			const auto offset = args[2] & 63u;
+			const auto count  = (args[2] >> 16u) & 127u;
+			const auto value  = static_cast<uint64_t>(args[0]) |
+			                   (static_cast<uint64_t>(args[1]) << 32u);
+			const auto available = 64u - offset;
+			const auto actual    = std::min(count, available);
+			const auto extracted = actual == 0 ? 0ull : (value >> offset) &
+			    (actual >= 64u ? UINT64_MAX : ((uint64_t {1} << actual) - 1ull));
+			result = op == ScalarValueOp::BitFieldExtractU64Low
+			             ? static_cast<uint32_t>(extracted)
+			             : static_cast<uint32_t>(extracted >> 32u);
+			break;
+		}
 		case ScalarValueOp::Add3: result = args[0] + args[1] + args[2]; break;
 		case ScalarValueOp::ShiftLeftAdd: result = (args[0] << shift) + args[2]; break;
 		case ScalarValueOp::ShiftLeftAddCarry:
@@ -99,6 +126,26 @@ bool ApplyOperation(ScalarValueOp op, const std::array<uint32_t, 3>& args, uint3
 		default: return false;
 	}
 	return true;
+}
+
+uint32_t ComputeScalarCompare(ScalarCompareKind kind, uint32_t a, uint32_t b) {
+	switch (kind) {
+		case ScalarCompareKind::Eq: return a == b ? 1u : 0u;
+		case ScalarCompareKind::Ne: return a != b ? 1u : 0u;
+		case ScalarCompareKind::LtU: return a < b ? 1u : 0u;
+		case ScalarCompareKind::LeU: return a <= b ? 1u : 0u;
+		case ScalarCompareKind::GtU: return a > b ? 1u : 0u;
+		case ScalarCompareKind::GeU: return a >= b ? 1u : 0u;
+		case ScalarCompareKind::LtI:
+			return static_cast<int32_t>(a) < static_cast<int32_t>(b) ? 1u : 0u;
+		case ScalarCompareKind::LeI:
+			return static_cast<int32_t>(a) <= static_cast<int32_t>(b) ? 1u : 0u;
+		case ScalarCompareKind::GtI:
+			return static_cast<int32_t>(a) > static_cast<int32_t>(b) ? 1u : 0u;
+		case ScalarCompareKind::GeI:
+			return static_cast<int32_t>(a) >= static_cast<int32_t>(b) ? 1u : 0u;
+	}
+	return 0u;
 }
 
 class ConstantFolder {
@@ -120,6 +167,25 @@ public:
 		uint32_t    out   = 0;
 		switch (value.op) {
 			case ScalarValueOp::Constant: out = value.imm; break;
+			case ScalarValueOp::Compare: {
+				uint32_t a = 0;
+				uint32_t b = 0;
+				if (!Fold(value.args[0], a) || !Fold(value.args[1], b)) {
+					return Dynamic(id);
+				}
+				out = ComputeScalarCompare(static_cast<ScalarCompareKind>(value.imm), a, b);
+				break;
+			}
+			case ScalarValueOp::Select: {
+				uint32_t cond = 0;
+				if (!Fold(value.args[0], cond)) {
+					return Dynamic(id);
+				}
+				if (!Fold(cond != 0 ? value.args[1] : value.args[2], out)) {
+					return Dynamic(id);
+				}
+				break;
+			}
 			case ScalarValueOp::Phi:
 				if (value.phi_args.empty() || !Fold(value.phi_args[0], out)) {
 					return Dynamic(id);
@@ -397,6 +463,27 @@ public:
 					return false;
 				}
 				break;
+			case ScalarValueOp::Compare: {
+				uint32_t a = 0;
+				uint32_t b = 0;
+				if (!Evaluate(value.args[0], a, error) || !Evaluate(value.args[1], b, error)) {
+					return false;
+				}
+				out = ComputeScalarCompare(static_cast<ScalarCompareKind>(value.imm), a, b);
+				break;
+			}
+			case ScalarValueOp::Select: {
+				uint32_t cond = 0;
+				if (!Evaluate(value.args[0], cond, error)) {
+					return false;
+				}
+				// Evaluate only the taken arm; the untaken arm may read memory that is not valid
+				// on this path.
+				if (!Evaluate(cond != 0 ? value.args[1] : value.args[2], out, error)) {
+					return false;
+				}
+				break;
+			}
 			case ScalarValueOp::Undefined:
 			case ScalarValueOp::Unknown:
 				return Fail(error, fmt::format("scalar value {} is unresolved", id));
