@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/ScalarProvenance.h"
 #include "graphics/shader/recompiler/SrtWalker.h"
 
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -43,6 +44,13 @@ Operand M0() {
 	Operand operand;
 	operand.kind     = OperandKind::Register;
 	operand.reg.file = RegisterFile::M0;
+	return operand;
+}
+
+Operand Scc() {
+	Operand operand;
+	operand.kind     = OperandKind::Register;
+	operand.reg.file = RegisterFile::Scc;
 	return operand;
 }
 
@@ -90,12 +98,34 @@ Instruction ReadLane(uint32_t pc, uint32_t dst, uint32_t src, uint32_t lane) {
 	return inst;
 }
 
+Instruction ReadFirstLane(uint32_t pc, uint32_t dst, uint32_t src) {
+	Instruction inst;
+	inst.pc        = pc;
+	inst.op        = Opcode::ReadFirstLaneU32;
+	inst.dst       = Sgpr(dst);
+	inst.src[0]    = Vgpr(src);
+	inst.src_count = 1;
+	return inst;
+}
+
 Instruction BufferUse(uint32_t pc, uint32_t base_sgpr) {
 	Instruction inst;
 	inst.pc              = pc;
 	inst.op              = Opcode::BufferLoadDword;
 	inst.memory.kind     = ResourceKind::Buffer;
 	inst.memory.resource = base_sgpr / 4;
+	return inst;
+}
+
+Instruction BitFieldExtract(uint32_t pc, uint32_t dst, uint32_t src, uint32_t field,
+	                          bool wide) {
+	Instruction inst;
+	inst.pc        = pc;
+	inst.op        = wide ? Opcode::BitFieldExtractU64 : Opcode::BitFieldExtractU32;
+	inst.dst       = Sgpr(dst);
+	inst.src[0]    = Sgpr(src);
+	inst.src[1]    = Sgpr(field);
+	inst.src_count = 2;
 	return inst;
 }
 
@@ -370,13 +400,62 @@ void TestScalarSelectDefinition() {
 	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
 	Check(source != nullptr, "scalar select descriptor source was not attached");
 	const auto& selected = Value(program, source->dwords[0]);
-	Check(selected.op == ScalarValueOp::Phi && selected.phi_args.size() == 2,
-	      "scalar select was not represented as a provenance alternative");
-	Check(Value(program, selected.phi_args[0]).op == ScalarValueOp::Constant &&
-	          Value(program, selected.phi_args[0]).imm == 7 &&
-	          Value(program, selected.phi_args[1]).op == ScalarValueOp::Constant &&
-	          Value(program, selected.phi_args[1]).imm == 9,
+	Check(selected.op == ScalarValueOp::Select,
+	      "scalar select was not represented as a conditional Select");
+	Check(Value(program, selected.args[1]).op == ScalarValueOp::Constant &&
+	          Value(program, selected.args[1]).imm == 7 &&
+	          Value(program, selected.args[2]).op == ScalarValueOp::Constant &&
+	          Value(program, selected.args[2]).imm == 9,
 		      "scalar select operands were not retained");
+}
+
+void TestScalarSelectConditionResolves() {
+	// s_cmp_eq_u32 scc, ud10, 0 ; s_cselect_b32 s0, scc, 0xAA, 0xBB feeding a buffer descriptor.
+	// The Select must resolve to the arm chosen by the evaluated condition (not require equal arms).
+	Program program;
+	program.user_data_base  = 0;
+	program.user_data_count = 16;
+	program.blocks.resize(1);
+	Instruction cmp;
+	cmp.pc        = 0;
+	cmp.op        = Opcode::CompareEqU32;
+	cmp.dst       = Scc();
+	cmp.src[0]    = Sgpr(10);
+	cmp.src[1]    = Imm(0);
+	cmp.src_count = 2;
+	Instruction select;
+	select.pc        = 4;
+	select.op        = Opcode::SelectU32;
+	select.dst       = Sgpr(0);
+	select.src[0]    = Scc();
+	select.src[1]    = Imm(0xAA);
+	select.src[2]    = Imm(0xBB);
+	select.src_count = 3;
+	program.blocks[0].instructions = {cmp, select, MoveImmediate(8, 1, 0), MoveImmediate(12, 2, 0),
+	                                  MoveImmediate(16, 3, 0), BufferUse(20, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
+	const auto source =
+	    program.blocks[0].instructions.back().memory.resource_source;
+	const auto* descriptor = GetDescriptorSource(program, source);
+	Check(descriptor != nullptr && Value(program, descriptor->dwords[0]).op == ScalarValueOp::Select,
+	      "conditional select descriptor dword was not a Select");
+	Check(DescriptorSourceResolved(program, source),
+	      "conditional select descriptor did not resolve (should not require equal arms)");
+
+	DescriptorValue value;
+	SrtRuntime       runtime;
+	std::array<uint32_t, 16> user_data {};
+	user_data[10] = 0; // condition true -> select first arm (0xAA)
+	runtime.user_data = user_data;
+	Check(EvaluateDescriptorSource(program, source, 20, runtime, value, &error), error.c_str());
+	Check(value.dwords[0] == 0xAAu, "true condition did not select the first arm");
+
+	user_data[10] = 5; // condition false -> select second arm (0xBB)
+	runtime.user_data = user_data;
+	Check(EvaluateDescriptorSource(program, source, 20, runtime, value, &error), error.c_str());
+	Check(value.dwords[0] == 0xBBu, "false condition did not select the second arm");
 }
 
 void TestScalarSelectLoopConvergence() {
@@ -421,6 +500,63 @@ void TestScalarMinMaxDefinition() {
 	const auto& selected = Value(program, source->dwords[0]);
 	Check(selected.op == ScalarValueOp::Phi && selected.phi_args.size() == 2,
 	      "scalar min/max was not represented as an operand choice");
+}
+
+void TestScalarBitwiseDefinitions() {
+	Program program;
+	program.blocks.resize(1);
+	Instruction nand;
+	nand.pc        = 4;
+	nand.op        = Opcode::BitwiseNandU32;
+	nand.dst       = Sgpr(0);
+	nand.src[0]    = Imm(7);
+	nand.src[1]    = Imm(9);
+	nand.src_count = 2;
+	Instruction and_or;
+	and_or.pc        = 8;
+	and_or.op        = Opcode::BitwiseAndOrU32;
+	and_or.dst       = Sgpr(1);
+	and_or.src[0]    = Sgpr(0);
+	and_or.src[1]    = Imm(11);
+	and_or.src[2]    = Imm(13);
+	and_or.src_count = 3;
+	Instruction or3;
+	or3.pc        = 12;
+	or3.op        = Opcode::BitwiseOr3U32;
+	or3.dst       = Sgpr(2);
+	or3.src[0]    = Sgpr(1);
+	or3.src[1]    = Imm(11);
+	or3.src[2]    = Imm(13);
+	or3.src_count = 3;
+	Instruction xor3;
+	xor3.pc        = 16;
+	xor3.op        = Opcode::BitwiseXor3U32;
+	xor3.dst       = Sgpr(3);
+	xor3.src[0]    = Sgpr(2);
+	xor3.src[1]    = Imm(17);
+	xor3.src[2]    = Imm(19);
+	xor3.src_count = 3;
+	Instruction nor;
+	nor.pc        = 20;
+	nor.op        = Opcode::BitwiseNorU32;
+	nor.dst       = Sgpr(0);
+	nor.src[0]    = Sgpr(3);
+	nor.src[1]    = Imm(23);
+	nor.src_count = 2;
+	Instruction xnor;
+	xnor.pc        = 24;
+	xnor.op        = Opcode::BitwiseXnorU32;
+	xnor.dst       = Sgpr(1);
+	xnor.src[0]    = Sgpr(0);
+	xnor.src[1]    = Imm(29);
+	xnor.src_count = 2;
+	program.blocks[0].instructions = {nand, and_or, or3, xor3, nor, xnor, BufferUse(28, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	const auto source = program.blocks[0].instructions.back().memory.resource_source;
+	Check(DescriptorSourceResolved(program, source),
+	      "bitwise three-input definitions were lost as unknown provenance");
 }
 
 void TestReadConstBufferAndValueNumbering() {
@@ -507,6 +643,25 @@ void TestReadLaneDescriptorSpill() {
 	      error.c_str());
 	Check(descriptor.dwords[0] == table[72],
 	      "readlane descriptor spill evaluated the overwritten scalar value");
+}
+
+void TestReadFirstLaneDescriptor() {
+	Program program;
+	program.wave_size = 64;
+	program.blocks.resize(1);
+	program.blocks[0].instructions = {MoveImmediate(0, 4, 0x12345678u),
+	                                  WriteLane(4, 11, 4, 0), ReadFirstLane(8, 0, 11),
+	                                  BufferUse(12, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
+	const auto source = program.blocks[0].instructions.back().memory.resource_source;
+	const auto* descriptor = GetDescriptorSource(program, source);
+	Check(descriptor != nullptr && DescriptorSourceResolved(program, source),
+	      "readfirstlane descriptor was not resolved");
+	Check(Value(program, descriptor->dwords[0]).op == ScalarValueOp::Constant &&
+	          Value(program, descriptor->dwords[0]).imm == 0x12345678u,
+	      "readfirstlane did not recover lane zero provenance");
 }
 
 void TestReadLaneVectorOverwriteInvalidatesSpill() {
@@ -1111,6 +1266,94 @@ void TestBitFieldMaskDescriptor() {
 	      "maximum bit-field mask count/offset evaluated incorrectly");
 }
 
+void TestBitFieldExtractDescriptors() {
+	Program program;
+	program.blocks.resize(1);
+	program.blocks[0].instructions = {
+	    MoveImmediate(0, 28, 0x12345678u), MoveImmediate(4, 29, 0x00080004u),
+	    MoveImmediate(8, 33, 0u), MoveImmediate(12, 34, 0x11111111u),
+	    MoveImmediate(16, 35, 0x22222222u), BitFieldExtract(20, 32, 28, 29, false),
+	    BufferUse(24, 32)};
+
+	std::string error;
+	if (!BuildScalarProvenance(program, &error) || !BuildSrtPlan(program, &error)) {
+		throw std::runtime_error("bitfield 32 build: " + error);
+	}
+	DescriptorValue descriptor;
+	const auto source = program.blocks[0].instructions.back().memory.resource_source;
+	if (!EvaluateDescriptorSource(program, source, 24, {}, descriptor, &error)) {
+		throw std::runtime_error("bitfield 32 evaluate: " + error);
+	}
+	Check(descriptor.dwords[0] == 0x67u && descriptor.dwords[1] == 0u &&
+	          descriptor.dwords[2] == 0x11111111u && descriptor.dwords[3] == 0x22222222u,
+	      "32-bit bit-field extract evaluated incorrectly");
+
+	program.blocks[0].instructions = {
+	    MoveImmediate(0, 40, 0x12345678u), MoveImmediate(4, 41, 0x9abcdef0u),
+	    MoveImmediate(8, 42, 0x00080004u), MoveImmediate(12, 50, 0x33333333u),
+	    MoveImmediate(16, 51, 0x44444444u), BitFieldExtract(20, 48, 40, 42, true),
+	    BufferUse(24, 48)};
+	if (!BuildScalarProvenance(program, &error) || !BuildSrtPlan(program, &error)) {
+		throw std::runtime_error("bitfield 64 build: " + error);
+	}
+	const auto wide_source = program.blocks[0].instructions.back().memory.resource_source;
+	if (!EvaluateDescriptorSource(program, wide_source, 24, {}, descriptor, &error)) {
+		throw std::runtime_error("bitfield 64 evaluate: " + error);
+	}
+	Check(descriptor.dwords[0] == 0x67u && descriptor.dwords[1] == 0u &&
+	          descriptor.dwords[2] == 0x33333333u && descriptor.dwords[3] == 0x44444444u,
+	      "64-bit bit-field extract evaluated incorrectly");
+}
+
+void TestDescribeScalarProvenanceRendersTree() {
+	Program program;
+	program.blocks.resize(1);
+	Instruction load;
+	load.pc              = 4;
+	load.op              = Opcode::SLoadDword;
+	load.dst             = Sgpr(16);
+	load.src[0]          = Imm(8);
+	load.src_count       = 1;
+	load.memory.kind     = ResourceKind::ScalarBuffer;
+	load.memory.resource = 4;
+	load.memory.offset   = 16;
+	program.blocks[0].instructions.push_back(load);
+	program.blocks[0].instructions.push_back(BufferUse(8, 16));
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	const auto* source =
+	    GetDescriptorSource(program, program.blocks[0].instructions[1].memory.resource_source);
+	Check(source != nullptr, "describe: descriptor source was not attached");
+	const auto rendered = DescribeScalarProvenance(program.provenance, source->dwords[0]);
+	Check(rendered.find("read_const") != std::string::npos,
+	      "describe: read_const op name was not rendered");
+	Check(rendered.find("ud") != std::string::npos,
+	      "describe: user-data root was not rendered");
+	Check(rendered.find("base=") != std::string::npos,
+	      "describe: read_const base operand was not rendered");
+}
+
+void TestDescribeScalarProvenanceIsCycleAndBudgetSafe() {
+	ScalarProvenance provenance;
+	provenance.values.resize(4);
+	provenance.values[ScalarProvenance::Undefined].op = ScalarValueOp::Undefined;
+	provenance.values[ScalarProvenance::Unknown].op   = ScalarValueOp::Unknown;
+	provenance.values[2].op                           = ScalarValueOp::Constant;
+	provenance.values[2].imm                          = 0x12345678u;
+	// A self-referential phi (mirrors a loop-carried definition) must not loop forever.
+	provenance.values[3].op       = ScalarValueOp::Phi;
+	provenance.values[3].phi_args = {3u, 2u};
+
+	const auto rendered = DescribeScalarProvenance(provenance, 3u, 8u);
+	Check(!rendered.empty(), "describe: cyclic phi produced no output");
+	Check(rendered.find("phi") != std::string::npos, "describe: phi op name was not rendered");
+	Check(rendered.size() < 4096, "describe: bounded budget was not honored");
+	// An out-of-range root must not read past the value table.
+	Check(DescribeScalarProvenance(provenance, 99u).find("bad") != std::string::npos,
+	      "describe: out-of-range value was not reported safely");
+}
+
 } // namespace
 
 int main() {
@@ -1123,10 +1366,13 @@ int main() {
 		TestScalarCarryChain();
 		TestReadConstDefinition();
 		TestScalarSelectDefinition();
+		TestScalarSelectConditionResolves();
 		TestScalarSelectLoopConvergence();
 		TestScalarMinMaxDefinition();
+		TestScalarBitwiseDefinitions();
 		TestReadConstBufferAndValueNumbering();
 		TestReadLaneDescriptorSpill();
+		TestReadFirstLaneDescriptor();
 		TestReadLaneVectorOverwriteInvalidatesSpill();
 		TestReadLanePhi();
 		TestReadLaneLoopConvergence();
@@ -1147,6 +1393,9 @@ int main() {
 		TestSubBorrowPointerChain();
 		TestCommonScalarPointerOps();
 		TestBitFieldMaskDescriptor();
+		TestBitFieldExtractDescriptors();
+		TestDescribeScalarProvenanceRendersTree();
+		TestDescribeScalarProvenanceIsCycleAndBudgetSafe();
 		std::cout << "ScalarProvenanceTests: all cases passed\n";
 		return 0;
 	} catch (const std::exception& e) {

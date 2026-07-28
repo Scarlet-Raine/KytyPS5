@@ -518,7 +518,16 @@ enum class ScalarValueOp {
 	BitFieldMaskU32,
 	BitFieldMaskU64Low,
 	BitFieldMaskU64High,
+	BitFieldExtractU32,
+	BitFieldExtractU64Low,
+	BitFieldExtractU64High,
 	Add3,
+	AndOr,
+	Or3,
+	Xor3,
+	Nand,
+	Nor,
+	Xnor,
 	ShiftLeftAdd,
 	ShiftLeftAddCarry,
 	AddShiftLeft,
@@ -527,6 +536,27 @@ enum class ScalarValueOp {
 	ReadConst,
 	ReadConstBuffer,
 	Phi,
+	// Data-dependent conditional select: args[0]=condition, args[1]=value-if-true,
+	// args[2]=value-if-false. Unlike Phi it carries the selector, so it resolves to a
+	// concrete value at evaluation instead of requiring both arms to be equal.
+	Select,
+	// Scalar comparison producing 0/1: args[0]/args[1] are the operands, imm is a
+	// ScalarCompareKind. Used to model the SCC feeding a Select.
+	Compare,
+};
+
+// Comparison kind stored in ScalarValue::imm for ScalarValueOp::Compare.
+enum class ScalarCompareKind : uint32_t {
+	Eq,
+	Ne,
+	LtU,
+	LeU,
+	GtU,
+	GeU,
+	LtI,
+	LeI,
+	GtI,
+	GeI,
 };
 
 struct ScalarValue {
