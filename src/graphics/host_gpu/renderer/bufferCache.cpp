@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -254,7 +255,14 @@ void BufferCache::QueueGarbageDownload(std::span<const DownloadCopy> copies,
 	    [this, downloads = std::move(downloads), retire = std::move(retire), tick]() mutable {
 		    PublishDownloads(downloads);
 		    {
-			    FaultSafeCacheLock lock(this, m_mutex);
+			    // A scheduler drain can run this completion synchronously on a thread that already
+			    // holds the cache lock (e.g. inside ObtainBuffer/ObtainBufferForImage). The retirement
+			    // bookkeeping only touches structures the outer lock already protects, so run it
+			    // directly in that case instead of re-acquiring the non-reentrant guard.
+			    std::optional<FaultSafeCacheLock> lock;
+			    if (g_cache_lock_owner != this) {
+				    lock.emplace(this, m_mutex);
+			    }
 			    if (m_memory_tracker.IsRegionGpuModified(retire.address, retire.size)) {
 				    m_memory_tracker.ForEachDownloadRange<true>(
 				        retire.address, retire.size,
