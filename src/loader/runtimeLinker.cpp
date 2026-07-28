@@ -980,6 +980,28 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		dump_guest_qwords("guest r13", info->r13);
 		dump_guest_qwords("guest r14", info->r14);
 		dump_guest_qwords("guest r15", info->r15);
+		dump_guest_qwords("guest rbp", info->rbp);
+
+		LOGF("guest rbp chain:");
+		uint64_t frame_addr = info->rbp;
+		for (uint32_t frame_index = 0; frame_index < 16; frame_index++) {
+			if (!is_readable_range(frame_addr, 2u * sizeof(uint64_t))) {
+				LOGF(" [%" PRIu32 "] %016" PRIx64 " (unmapped)", frame_index, frame_addr);
+				break;
+			}
+
+			const auto* frame = reinterpret_cast<const uint64_t*>(frame_addr);
+			const auto  next  = frame[0];
+			const auto  ret   = frame[1];
+			LOGF(" [%" PRIu32 "] %016" PRIx64 " -> %016" PRIx64 " ret=%016" PRIx64,
+			     frame_index, frame_addr, next, ret);
+
+			if (next <= frame_addr || (next & (sizeof(uint64_t) - 1u)) != 0) {
+				break;
+			}
+			frame_addr = next;
+		}
+		LOGF("\n");
 
 		if (info->exception_address == 0x000000090064364e &&
 		    IsDumpableRange(info->rbx, sizeof(uint64_t))) {
