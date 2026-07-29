@@ -59,6 +59,9 @@ uint64_t ReadReferenceClock() {
 
 enum class EndOfPipeCompletion { None, Interrupt, Flip, FlipAndInterrupt };
 
+enum class EndOfPipeWriteSize : uint32_t { Dword = 4, Qword = 8 };
+enum class EndOfPipeWriteAction { Write, WriteBack, Interrupt, InterruptWriteBack };
+
 struct EndOfPipeSignal {
 	CommandBuffer*          buffer          = nullptr;
 	uint64_t                submit_id       = 0;
@@ -68,10 +71,11 @@ struct EndOfPipeSignal {
 	std::optional<uint64_t> destination;
 	EndOfPipeCompletion     completion      = EndOfPipeCompletion::None;
 	uint64_t                completion_data = 0;
+	// Set when `destination` must actually receive `write_value` once the submitted work retires.
+	// Without this the value is only recorded for diagnostics and never reaches guest memory.
+	std::optional<EndOfPipeWriteSize> write_size;
+	uint64_t                          write_value = 0;
 };
-
-enum class EndOfPipeWriteSize : uint32_t { Dword = 4, Qword = 8 };
-enum class EndOfPipeWriteAction { Write, WriteBack, Interrupt, InterruptWriteBack };
 
 static void ValidateEndOfPipeSignal(const EndOfPipeSignal& signal) {
 	if (signal.destination.has_value()) {
@@ -89,6 +93,27 @@ static void RecordEndOfPipeSignal(const EndOfPipeSignal& signal) {
 
 	auto& renderer  = signal.buffer->GetContext();
 	auto& scheduler = renderer.GetCommandScheduler();
+
+	// Deliver the end-of-pipe value to guest memory. A guest uses these writes as GPU labels and
+	// then blocks on them with wait_reg_mem; if the value never lands, the command processor parks on
+	// that wait forever and every later submission on the same ordered queue starves, which surfaces
+	// only as the guest's own render-thread timeout.
+	//
+	// The store happens here, on the command-processor thread, rather than on the completion path.
+	// Guest pages are demand-backed, so a store from an asynchronous GPU completion can raise a
+	// guest-memory fault that cannot be resolved in that context. Submissions are executed in order,
+	// so a label published here is still ordered correctly with respect to the waits that follow it.
+	if (signal.write_size.has_value() && signal.destination.has_value()) {
+		const auto destination = static_cast<uintptr_t>(*signal.destination);
+		if (*signal.write_size == EndOfPipeWriteSize::Qword) {
+			const auto value = signal.write_value;
+			std::memcpy(reinterpret_cast<void*>(destination), &value, sizeof(value));
+		} else {
+			const auto value = static_cast<uint32_t>(signal.write_value);
+			std::memcpy(reinterpret_cast<void*>(destination), &value, sizeof(value));
+		}
+	}
+
 	if (signal.completion != EndOfPipeCompletion::None) {
 		EXIT_IF(!scheduler.Active() || signal.buffer != &scheduler.Current());
 	}
@@ -151,6 +176,8 @@ static void RecordEndOfPipeWrite(uint64_t submit_id, CommandBuffer& buffer, uint
 	    .destination     = destination,
 	    .completion      = interrupt ? EndOfPipeCompletion::Interrupt : EndOfPipeCompletion::None,
 	    .completion_data = context_id != 0 ? context_id : value,
+	    .write_size      = size,
+	    .write_value     = value,
 	};
 	RecordEndOfPipeSignal(signal);
 }
@@ -189,7 +216,9 @@ void WriteAtEndOfPipe64(uint64_t submit_id, CommandBuffer& buffer, uint64_t* dst
 
 void WriteAtEndOfPipeClockCounter(uint64_t submit_id, CommandBuffer& buffer, uint64_t* dst_gpu_addr,
                                   uint64_t value) {
-	RecordEndOfPipeWrite(submit_id, buffer, reinterpret_cast<uint64_t>(dst_gpu_addr), 0,
+	// The value is the sampled clock and is what the guest reads back, so it is what must land at
+	// the destination now that end-of-pipe writes are performed.
+	RecordEndOfPipeWrite(submit_id, buffer, reinterpret_cast<uint64_t>(dst_gpu_addr), value,
 	                     EndOfPipeWriteSize::Qword, EndOfPipeWriteAction::Write);
 
 	LOGF_COLOR(Log::Color::BrightGreen,
@@ -199,7 +228,7 @@ void WriteAtEndOfPipeClockCounter(uint64_t submit_id, CommandBuffer& buffer, uin
 
 void WriteAtEndOfPipeClockCounterWithWriteBack(uint64_t submit_id, CommandBuffer& buffer,
                                                uint64_t* dst_gpu_addr, uint64_t value) {
-	RecordEndOfPipeWrite(submit_id, buffer, reinterpret_cast<uint64_t>(dst_gpu_addr), 0,
+	RecordEndOfPipeWrite(submit_id, buffer, reinterpret_cast<uint64_t>(dst_gpu_addr), value,
 	                     EndOfPipeWriteSize::Qword, EndOfPipeWriteAction::WriteBack);
 
 	LOGF_COLOR(Log::Color::BrightGreen,
