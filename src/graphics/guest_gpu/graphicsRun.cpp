@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -37,6 +38,41 @@ static thread_local Pm4Execution*     g_current_execution      = nullptr;
 static thread_local uint32_t          g_submission_pause_depth = 0;
 static thread_local bool              g_gpu_mutex_owned        = false;
 static thread_local bool              g_gpu_thread             = false;
+
+// Presentation progress watchdog. A guest can fatally time out waiting for its render thread, and
+// the resulting report says nothing about the emulator side. Publishing a periodic timestamped
+// flip count distinguishes a render thread that is blocked from one that is still running but no
+// longer presenting, and marks in the log exactly when progress stopped.
+static std::atomic_uint64_t g_flip_count {0};
+static std::atomic_bool     g_flip_watchdog_started {false};
+
+static void NoteFlipProgress() {
+	g_flip_count.fetch_add(1, std::memory_order_relaxed);
+
+	bool expected = false;
+	if (!g_flip_watchdog_started.compare_exchange_strong(expected, true)) {
+		return;
+	}
+
+	std::thread([] {
+		const auto start     = std::chrono::steady_clock::now();
+		auto       last_seen = g_flip_count.load(std::memory_order_relaxed);
+		auto       last_move = start;
+		for (;;) {
+			std::this_thread::sleep_for(std::chrono::seconds(5));
+			const auto now     = std::chrono::steady_clock::now();
+			const auto flips   = g_flip_count.load(std::memory_order_relaxed);
+			const auto elapsed = std::chrono::duration<double>(now - start).count();
+			if (flips != last_seen) {
+				last_seen = flips;
+				last_move = now;
+			}
+			const auto stalled = std::chrono::duration<double>(now - last_move).count();
+			LOGF("RenderProgress: t=%.2f flips=%" PRIu64 " no_flip_for=%.2fs\n", elapsed, flips,
+			     stalled);
+		}
+	}).detach();
+}
 
 class GpuMutexLock final {
 public:
@@ -1573,6 +1609,7 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 
 void CommandProcessor::Flip() {
 	CheckBuffer();
+	NoteFlipProgress();
 
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::Flip()\n");
@@ -1588,6 +1625,7 @@ void CommandProcessor::Flip() {
 
 void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
 	CheckBuffer();
+	NoteFlipProgress();
 
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::Flip()\n"
@@ -1609,6 +1647,7 @@ void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
 void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache_action,
                                          void* dst_gpu_addr, uint32_t value) {
 	CheckBuffer();
+	NoteFlipProgress();
 
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::FlipWithInterrupt()\n"
