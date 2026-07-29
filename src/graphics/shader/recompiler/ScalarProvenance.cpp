@@ -960,7 +960,13 @@ private:
 			if (incoming.empty()) {
 				return ScalarProvenance::Undefined;
 			}
-			if (incoming.size() == 1) {
+			// Once a slot has become a merge point its phi is sticky: keep routing through it even if
+			// the live predecessor set later collapses back to a single value. Returning the concrete
+			// value in that case makes the merge non-monotone -- the result id flips between the phi
+			// and a predecessor value as the set oscillates between one and two entries across loop
+			// iterations -- which prevents the worklist from ever converging. A phi that resolves to a
+			// single argument is a harmless identity for downstream consumers.
+			if (incoming.size() == 1 && *phi == ScalarProvenance::Undefined) {
 				return incoming[0];
 			}
 			if (*phi == ScalarProvenance::Undefined) {
