@@ -346,6 +346,14 @@ static_assert(sizeof(ModuleInfoForUnwind) == 304);
 constexpr size_t PROGNAME_MAX_SIZE = 511;
 
 static uint64_t             g_stack_chk_guard                     = 0xDeadBeef00000007;
+
+// Diagnostic accessor. `__stack_chk_guard` is exported to the guest as a LIB_OBJECT, so guest
+// libc/PRX startup can legitimately re-initialize it. A guest function that stored the old cookie
+// and returns after such a change fails its canary check even though its stack is intact, so the
+// abort handler reports the live value to distinguish that from real stack corruption.
+uint64_t StackChkGuardCurrent() {
+	return g_stack_chk_guard;
+}
 static char                 g_progname_buf[PROGNAME_MAX_SIZE + 1] = {0};
 static const char*          g_progname                            = g_progname_buf;
 static std::atomic_uint64_t g_gpo_state_bits {0};
