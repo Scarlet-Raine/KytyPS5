@@ -288,6 +288,43 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 		}
 	}
 
+	// The guest's fatal log path formats its message with vsnwprintf into a stack buffer before
+	// dispatching it to a sink that terminates, so the text is still live on the guest stack here.
+	// Recovering it is the only way to learn what the game actually objected to, because abort() is
+	// reached through a generic handler that carries no failure detail.
+	if (rsp != 0) {
+		constexpr uint64_t SCAN_BYTES  = 16384;
+		constexpr uint32_t MIN_CHARS   = 12;
+		constexpr uint32_t MAX_REPORTS = 12;
+		uint32_t           reports     = 0;
+		LOGF("Guest abort: UTF-16 text found on the guest stack:\n");
+		for (uint64_t offset = 0; offset + 2 <= SCAN_BYTES && reports < MAX_REPORTS; offset += 2) {
+			const auto addr = rsp + offset;
+			if (!Graphics::HostMemoryIsReadable(addr) ||
+			    !Graphics::HostMemoryIsReadable(addr + 1)) {
+				continue;
+			}
+			char     text[192];
+			uint32_t len   = 0;
+			auto     probe = addr;
+			while (len + 1 < sizeof(text) && Graphics::HostMemoryIsReadable(probe) &&
+			       Graphics::HostMemoryIsReadable(probe + 1)) {
+				const auto ch = *reinterpret_cast<const uint16_t*>(static_cast<uintptr_t>(probe));
+				if (ch < 0x20 || ch > 0x7e) {
+					break;
+				}
+				text[len++] = static_cast<char>(ch);
+				probe += 2;
+			}
+			if (len >= MIN_CHARS) {
+				text[len] = '\0';
+				LOGF("\t +0x%04" PRIx64 " \"%s\"\n", offset, text);
+				reports++;
+				offset += static_cast<uint64_t>(len) * 2;
+			}
+		}
+	}
+
 	EXIT("Guest abort()\n");
 	std::abort();
 }
