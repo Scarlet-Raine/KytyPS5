@@ -2819,10 +2819,15 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 	}
 
 	if (raw_cmd_offset != cmd_offset) {
-		LOGF_COLOR(Log::Color::Red,
-		           "\t temporary: normalized UC register offset 0x%08" PRIx32 " -> 0x%08" PRIx32
-		           "\n",
-		           raw_cmd_offset, cmd_offset);
+		// Fires on every normalized UC write in some titles; bound it so the per-packet path
+		// cannot saturate the log sink.
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Red,
+			           "\t temporary: normalized UC register offset 0x%08" PRIx32 " -> 0x%08" PRIx32
+			           "\n",
+			           raw_cmd_offset, cmd_offset);
+		}
 	}
 	if (HwUcTrySetFakeRegisterRange(cmd_offset, buffer + 1, KYTY_PM4_LEN(cmd_id) - 2u)) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
