@@ -41,6 +41,9 @@ public:
 	[[nodiscard]] uint64_t GetPageSize() const;
 	[[nodiscard]] bool     IsTracked(uint64_t vaddr) const noexcept;
 	[[nodiscard]] bool     IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
+	// Bytes from `vaddr` that are contiguously mapped, capped at `size`. Distinguishes a descriptor
+	// aimed at never-mapped memory (0) from one whose size overruns an otherwise valid mapping.
+	[[nodiscard]] uint64_t MappedPrefixSize(uint64_t vaddr, uint64_t size) const noexcept;
 	[[nodiscard]] bool     HasAnyMapping(uint64_t vaddr, uint64_t size) const noexcept;
 	[[nodiscard]] bool HasGpuAccess(uint64_t vaddr, uint64_t size, GpuAccess access) const noexcept;
 

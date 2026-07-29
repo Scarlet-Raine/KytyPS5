@@ -1185,19 +1185,38 @@ void BufferCache::ValidateGpuAccess(uint64_t vaddr, uint64_t size, bool is_read,
 	}
 	if (is_read && !m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Read)) {
 		EXIT("BufferCache: GPU-read access denied addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     " mapped=%d tracked=%d\n",
-		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr));
+		     " mapped=%d tracked=%d mapped_prefix=0x%016" PRIx64 "\n",
+		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr),
+		     m_page_manager.MappedPrefixSize(vaddr, size));
 	}
 	if (is_written && !m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Write)) {
 		EXIT("BufferCache: GPU-write access denied addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     " mapped=%d tracked=%d\n",
-		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr));
+		     " mapped=%d tracked=%d mapped_prefix=0x%016" PRIx64 "\n",
+		     vaddr, size, m_page_manager.IsMapped(vaddr, size), m_page_manager.IsTracked(vaddr),
+		     m_page_manager.MappedPrefixSize(vaddr, size));
 	}
 }
 
 bool BufferCache::IsGpuReadable(uint64_t vaddr, uint64_t size) const {
-	return vaddr != 0 && size != 0 && size <= UINT64_MAX - vaddr &&
-	       m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Read);
+	if (vaddr == 0 || size == 0 || size > UINT64_MAX - vaddr) {
+		return false;
+	}
+	if (m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Read)) {
+		return true;
+	}
+	// Report why the range was rejected, capped so a per-draw rejection cannot flood the log. A
+	// non-zero mapped prefix means the descriptor's base lies in a valid mapping and only its size
+	// overruns it, which points at a size computation rather than a stale descriptor; a zero prefix
+	// means the base itself was never mapped.
+	static std::atomic_uint32_t report_count {0};
+	constexpr uint32_t          REPORT_MAX = 32;
+	if (report_count.fetch_add(1, std::memory_order_relaxed) < REPORT_MAX) {
+		LOGF("BufferCache: range not GPU-readable addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " mapped_prefix=0x%016" PRIx64 " tracked=%d\n",
+		     vaddr, size, m_page_manager.MappedPrefixSize(vaddr, size),
+		     static_cast<int>(m_page_manager.IsTracked(vaddr)));
+	}
+	return false;
 }
 
 void BufferCache::RunGarbageCollector() {

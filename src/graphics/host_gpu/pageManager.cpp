@@ -326,6 +326,25 @@ bool PageManager::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 	return true;
 }
 
+uint64_t PageManager::MappedPrefixSize(uint64_t vaddr, uint64_t size) const noexcept {
+	if (vaddr == 0 || size == 0 || vaddr >= ADDRESS_SIZE || size > ADDRESS_SIZE - vaddr) {
+		return 0;
+	}
+	const auto end = PageStart(vaddr + size - 1) + PAGE_SIZE;
+	for (auto page_vaddr = PageStart(vaddr); page_vaddr < end; page_vaddr += PAGE_SIZE) {
+		auto* region = m_impl->FindRegion(page_vaddr);
+		if (region == nullptr) {
+			return page_vaddr <= vaddr ? 0 : page_vaddr - vaddr;
+		}
+		auto&     page = m_impl->GetPage(*region, page_vaddr);
+		SpinGuard lock(page.lock);
+		if (page.mappings == 0) {
+			return page_vaddr <= vaddr ? 0 : page_vaddr - vaddr;
+		}
+	}
+	return size;
+}
+
 bool PageManager::HasAnyMapping(uint64_t vaddr, uint64_t size) const noexcept {
 	if (g_in_fault_resolution || vaddr == 0 || size == 0 || vaddr >= ADDRESS_SIZE ||
 	    size > ADDRESS_SIZE - vaddr) {
