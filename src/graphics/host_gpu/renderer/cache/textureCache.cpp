@@ -1186,6 +1186,30 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		if (!result) {
+			// A fresh image over a range whose contents only exist in another image's host
+			// backing (GPU-modified, never written back to guest memory) will be initialized
+			// from stale guest bytes. Report it: this shadowing is invisible otherwise and
+			// renders as garbage where the guest expected its previous pass's output.
+			for (const auto candidate: candidates) {
+				const auto owner = ResolveOwner(candidate);
+				if (owner != nullptr && owner->IsGpuModified()) {
+					LOGF_BOUNDED(
+					    64,
+					    "TextureCache: new image shadows GPU-only contents: requested "
+					    "addr=0x%010" PRIx64 " size=0x%010" PRIx64 " fmt=%u tile=%u %ux%u bpp=%u"
+					    " type=%u binding=%u | cached addr=0x%010" PRIx64 " size=0x%010" PRIx64
+					    " fmt=%u tile=%u %ux%u bpp=%u rt=%d\n",
+					    desc.info.data.address, desc.info.data.size,
+					    static_cast<uint32_t>(desc.info.pixel_format), desc.info.tile_mode,
+					    desc.info.extent.width, desc.info.extent.height, desc.info.bytes_per_block,
+					    static_cast<uint32_t>(desc.info.type), static_cast<uint32_t>(desc.type),
+					    owner->info.data.address, owner->info.data.size,
+					    static_cast<uint32_t>(owner->info.pixel_format), owner->info.tile_mode,
+					    owner->info.extent.width, owner->info.extent.height,
+					    owner->info.bytes_per_block, owner->usage.render_target ? 1 : 0);
+					break;
+				}
+			}
 			result         = InsertImage(desc.info);
 			inserted_new   = true;
 			auto& inserted = ResolveImage(result);
