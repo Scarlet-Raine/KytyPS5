@@ -59,6 +59,9 @@ public:
 	void GetConnectionInfo(bool* flag, int* count);
 	void ReadState(ControllerState* state, bool* flag, int* count);
 	int  ReadStates(ControllerState* states, int states_num, bool* flag, int* count);
+	// The pad the guest actually polls. Input is only accepted for this id (see Button/Axis), so
+	// synthetic input must target it rather than assuming the keyboard pseudo-pad is active.
+	int  ActiveId();
 
 private:
 	static constexpr uint32_t STATES_MAX = 64;
@@ -224,6 +227,12 @@ void GameController::Button(int id, uint32_t button, bool down) {
 	}
 }
 
+int GameController::ActiveId() {
+	Common::LockGuard lock(m_mutex);
+
+	return m_active_id;
+}
+
 void GameController::Axis(int id, Controller::Axis axis, int value) {
 	Common::LockGuard lock(m_mutex);
 
@@ -328,6 +337,12 @@ void ControllerButton(int id, uint32_t button, bool down) {
 	EXIT_IF(g_controller == nullptr);
 
 	g_controller->Button(id, button, down);
+}
+
+int ControllerActiveId() {
+	EXIT_IF(g_controller == nullptr);
+
+	return g_controller->ActiveId();
 }
 
 void ControllerAxis(int id, Axis axis, int value) {
