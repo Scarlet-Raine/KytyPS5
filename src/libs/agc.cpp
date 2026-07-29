@@ -909,9 +909,11 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetAddress(uint32_t*             
                                                           const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
-	     "\t regs = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
+	// Called per draw; bounded so steady-state traffic cannot saturate the log sink.
+	LOGF_BOUNDED(64,
+	             "\t cmd  = 0x%016" PRIx64 "\n"
+	             "\t regs = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 	EXIT_NOT_IMPLEMENTED(regs == nullptr);
@@ -925,9 +927,10 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetAddress(uint32_t*             
                                                           const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
-	     "\t regs = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
+	LOGF_BOUNDED(64,
+	             "\t cmd  = 0x%016" PRIx64 "\n"
+	             "\t regs = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 	EXIT_NOT_IMPLEMENTED(regs == nullptr);
@@ -941,9 +944,10 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetAddress(uint32_t*             
                                                           const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
-	     "\t regs = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
+	LOGF_BOUNDED(64,
+	             "\t cmd  = 0x%016" PRIx64 "\n"
+	             "\t regs = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 	EXIT_NOT_IMPLEMENTED(regs == nullptr);
@@ -956,9 +960,10 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetAddress(uint32_t*             
 int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -968,9 +973,10 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -980,9 +986,10 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -992,9 +999,10 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -1004,9 +1012,10 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint3
 int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -1016,9 +1025,10 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint3
 int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(cmd), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t cmd      = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(cmd), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -1683,9 +1693,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbSetShRegistersDirect(CommandBuffer*           
                                                        uint32_t                       num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t regs     = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(regs), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t regs     = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(regs), num_regs);
 
 	if (num_regs == 0) {
 		return nullptr;
@@ -2068,9 +2079,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetCxRegistersIndirect(CommandBuffer*        
                                                           uint32_t                       num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t regs     = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(regs), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t regs     = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(regs), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
 
@@ -2092,9 +2104,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetShRegistersIndirect(CommandBuffer*        
                                                           uint32_t                       num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t regs     = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(regs), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t regs     = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(regs), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
 
@@ -2116,9 +2129,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetUcRegistersIndirect(CommandBuffer*        
                                                           uint32_t                       num_regs) {
 	PRINT_NAME();
 
-	LOGF("\t regs     = 0x%016" PRIx64 "\n"
-	     "\t num_regs = %" PRIu32 "\n",
-	     reinterpret_cast<uint64_t>(regs), num_regs);
+	LOGF_BOUNDED(64,
+	             "\t regs     = 0x%016" PRIx64 "\n"
+	             "\t num_regs = %" PRIu32 "\n",
+	             reinterpret_cast<uint64_t>(regs), num_regs);
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
 
@@ -3356,9 +3370,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbGetLodStats(CommandBuffer* buf, uint8_t cache
 int KYTY_SYSV_ABI GraphicsWaitRegMemPatchAddress(uint32_t* cmd, const volatile void* address) {
 	PRINT_NAME();
 
-	LOGF("\t cmd     = 0x%016" PRIx64 "\n"
-	     "\t address = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(address));
+	LOGF_BOUNDED(64,
+	             "\t cmd     = 0x%016" PRIx64 "\n"
+	             "\t address = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(address));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -3381,9 +3396,10 @@ int KYTY_SYSV_ABI GraphicsWaitRegMemPatchAddress(uint32_t* cmd, const volatile v
 int KYTY_SYSV_ABI GraphicsWaitRegMemPatchReference(uint32_t* cmd, uint64_t reference) {
 	PRINT_NAME();
 
-	LOGF("\t cmd       = 0x%016" PRIx64 "\n"
-	     "\t reference = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reference);
+	LOGF_BOUNDED(64,
+	             "\t cmd       = 0x%016" PRIx64 "\n"
+	             "\t reference = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reference);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -3407,9 +3423,10 @@ int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchAddress(uint32_t*            
 
 	// Not sure
 
-	LOGF("\t cmd     = 0x%016" PRIx64 "\n"
-	     "\t address = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(address));
+	LOGF_BOUNDED(64,
+	             "\t cmd     = 0x%016" PRIx64 "\n"
+	             "\t address = 0x%016" PRIx64 "\n",
+	             reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(address));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -3492,16 +3509,19 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbWaitRegMem(CommandBuffer* buf, uint8_t size,
                                               uint32_t poll_cycles) {
 	PRINT_NAME();
 
-	LOGF("\t size             = 0x%02" PRIx8 "\n"
-	     "\t compare_function = 0x%02" PRIx8 "\n"
-	     "\t op               = 0x%02" PRIx8 "\n"
-	     "\t cache_policy     = 0x%02" PRIx8 "\n"
-	     "\t address          = 0x%016" PRIx64 "\n"
-	     "\t reference        = 0x%016" PRIx64 "\n"
-	     "\t mask             = 0x%016" PRIx64 "\n"
-	     "\t poll_cycles      = %" PRIu32 "\n",
-	     size, compare_function, op, cache_policy, reinterpret_cast<uint64_t>(address), reference,
-	     mask, poll_cycles);
+	// Per-wait setup; the parked-wait diagnostics in the command processor cover the
+	// interesting cases, so this builder dump only needs the first records.
+	LOGF_BOUNDED(64,
+	             "\t size             = 0x%02" PRIx8 "\n"
+	             "\t compare_function = 0x%02" PRIx8 "\n"
+	             "\t op               = 0x%02" PRIx8 "\n"
+	             "\t cache_policy     = 0x%02" PRIx8 "\n"
+	             "\t address          = 0x%016" PRIx64 "\n"
+	             "\t reference        = 0x%016" PRIx64 "\n"
+	             "\t mask             = 0x%016" PRIx64 "\n"
+	             "\t poll_cycles      = %" PRIu32 "\n",
+	             size, compare_function, op, cache_policy, reinterpret_cast<uint64_t>(address),
+	             reference, mask, poll_cycles);
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
 	if (size != 0 && size != 1) {
