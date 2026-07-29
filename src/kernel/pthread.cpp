@@ -3919,10 +3919,12 @@ int KYTY_SYSV_ABI PthreadSetspecific(PthreadKey key, void* value) {
 
 	int thread_id = Common::Thread::GetThreadIdUnique();
 
-	LOGF("\t key       = %d\n"
-	     "\t thread_id = %d\n"
-	     "\t value     = %016" PRIx64 "\n",
-	     key, thread_id, reinterpret_cast<uint64_t>(value));
+	// Called from hot guest loops; bounded so TLS traffic cannot saturate the log sink.
+	LOGF_BOUNDED(64,
+	             "\t key       = %d\n"
+	             "\t thread_id = %d\n"
+	             "\t value     = %016" PRIx64 "\n",
+	             key, thread_id, reinterpret_cast<uint64_t>(value));
 
 	if (!g_pthread_context->GetPthreadKeys()->Set(key, thread_id, value)) {
 		return KERNEL_ERROR_EINVAL;
