@@ -3700,6 +3700,31 @@ static bool dcb_has_queued_interrupt(const uint32_t* dcb, uint32_t size_in_dword
 }
 
 static void submit_dcb(uint32_t* dcb, uint32_t size_in_dwords) {
+	// Bracket the flip path. A guest render thread can stall waiting for a presentation that never
+	// happens; reporting whether a submitted DCB even carries an R_FLIP packet separates "the guest
+	// never submitted the flip" from "the flip was submitted but never executed". Also report a
+	// packet walk that terminates early, since a bad length silently abandons the rest of the DCB.
+	if (dcb != nullptr) {
+		bool     has_flip = false;
+		uint32_t offset   = 0;
+		for (; offset < size_in_dwords;) {
+			const auto cmd_id = dcb[offset];
+			const auto len    = KYTY_PM4_LEN(cmd_id);
+			if (len == 0 || len > size_in_dwords - offset) {
+				break;
+			}
+			if (((cmd_id >> 8u) & 0xffu) == Pm4::IT_NOP && KYTY_PM4_R(cmd_id) == Pm4::R_FLIP) {
+				has_flip = true;
+			}
+			offset += len;
+		}
+		if (has_flip || offset != size_in_dwords) {
+			LOGF("submit_dcb: size=%" PRIu32 " walked=%" PRIu32 " has_flip=%d%s\n", size_in_dwords,
+			     offset, static_cast<int>(has_flip),
+			     offset != size_in_dwords ? " PACKET_WALK_TRUNCATED" : "");
+		}
+	}
+
 	GraphicsDbgDumpDcb("d", size_in_dwords, dcb);
 	EXIT_IF(g_renderer == nullptr);
 	g_renderer->GetGpu().Submit(dcb, size_in_dwords, nullptr, 0,
