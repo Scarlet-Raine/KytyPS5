@@ -9,6 +9,10 @@
 
 namespace Libs::Graphics {
 
+// Publishes the draw stage currently executing so the presentation watchdog can report where the
+// command processor is when it stops making progress. `stage` must have static lifetime.
+void NoteDrawStage(const char* stage);
+
 class CommandProcessor;
 class GpuState;
 class RenderContext;
