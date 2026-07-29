@@ -1053,11 +1053,26 @@ void FlipQueue::Complete(uint64_t request_id) {
 
 void FlipQueue::WaitForSubmitSlot() {
 	Common::LockGuard lock(m_mutex);
+	// This runs on the GPU command-processor thread, so blocking here stops all further packet
+	// processing, including whatever would retire the queued flips. Wait with a timeout and report
+	// the queue state so that circular wait is visible in the log instead of appearing as a silent
+	// hang that the guest only notices via its own render-thread timeout.
+	constexpr uint32_t WAIT_SLICE_MICROS = 500000;
+	uint32_t           slices           = 0;
 	while (m_requests.size() + m_cpu_requests.size() >= VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
 		if (m_requests.empty()) {
 			EXIT("video-out queue is saturated by CPU flips queued behind the current EOP\n");
 		}
-		m_submit_slot_cond_var.Wait(&m_mutex);
+		if (!m_submit_slot_cond_var.WaitFor(&m_mutex, WAIT_SLICE_MICROS)) {
+			slices++;
+			// Report on the first stalled second, then once per ~8 s to stay bounded.
+			if (slices == 2 || (slices % 16) == 0) {
+				LOGF("VideoOut: flip submit slot unavailable for %.1fs (gpu_requests=%zu "
+				     "cpu_requests=%zu capacity=%u)\n",
+				     static_cast<double>(slices) * 0.5, m_requests.size(), m_cpu_requests.size(),
+				     static_cast<uint32_t>(VIDEO_OUT_FLIP_QUEUE_CAPACITY));
+			}
+		}
 	}
 }
 
