@@ -339,7 +339,7 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 	if (stack_top != nullptr) {
 		const auto guest_rsp =
 		    reinterpret_cast<uintptr_t>(stack_top) & ~static_cast<uintptr_t>(0x0f);
-		const auto guest_rbp = guest_rsp - 4u * sizeof(uint64_t);
+		const auto guest_rbp = guest_rsp - 2u * sizeof(uint64_t);
 
 		auto* guest_root_frame = reinterpret_cast<uintptr_t*>(guest_rbp);
 		guest_root_frame[0]    = 0;
@@ -358,7 +358,7 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 		             "popq %%r12\n\t"
 		             :
 		             : [func] "r"(func), "D"(params),
-		               "S"(atexit_func), [guest_rsp] "r"(guest_rsp), [guest_rbp] "r"(guest_rbp)
+		               "S"(atexit_func), [guest_rsp] "r"(guest_rbp), [guest_rbp] "r"(guest_rbp)
 		             : "cc", "memory", "rax", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0",
 		               "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9",
 		               "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
@@ -731,7 +731,7 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 
 		LOGF("guest rbp chain:");
 		uint64_t frame_addr = info->rbp;
-		for (uint32_t frame_index = 0; frame_index < 16; frame_index++) {
+		for (uint32_t frame_index = 0; frame_index < 64; frame_index++) {
 			if (!is_readable_range(frame_addr, 2u * sizeof(uint64_t))) {
 				LOGF(" [%" PRIu32 "] %016" PRIx64 " (unmapped)", frame_index, frame_addr);
 				break;
@@ -740,8 +740,18 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			const auto* frame = reinterpret_cast<const uint64_t*>(frame_addr);
 			const auto  next  = frame[0];
 			const auto  ret   = frame[1];
-			LOGF(" [%" PRIu32 "] %016" PRIx64 " -> %016" PRIx64 " ret=%016" PRIx64,
-			     frame_index, frame_addr, next, ret);
+			auto*       prog =
+			    Common::Singleton<Loader::RuntimeLinker>::Instance()->FindProgramByAddr(ret);
+			const auto ret_off =
+			    (prog != nullptr && ret >= prog->base_vaddr) ? ret - prog->base_vaddr : 0;
+			LOGF(" [%" PRIu32 "] %016" PRIx64 " -> %016" PRIx64 " ret=%016" PRIx64 " (%s+0x%" PRIx64
+			     ")",
+			     frame_index, frame_addr, next, ret,
+			     prog != nullptr ? Common::FilenameWithoutDirectory(
+			                           Common::PathToGenericString(prog->file_name))
+			                           .c_str()
+			                     : "?",
+			     ret_off);
 
 			if (next <= frame_addr || (next & (sizeof(uint64_t) - 1u)) != 0) {
 				break;

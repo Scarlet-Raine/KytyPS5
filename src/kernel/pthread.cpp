@@ -758,13 +758,16 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 #if defined(__x86_64__) || defined(_M_X64)
 	void*      ret       = nullptr;
 	const auto guest_rsp = reinterpret_cast<uintptr_t>(stack_top) & ~static_cast<uintptr_t>(0x0f);
-	const auto guest_rbp = guest_rsp - 4u * sizeof(uint64_t);
+	// The terminating root frame must be ABOVE the callable stack (higher address) so the
+	// thread entry's own stack growth cannot overwrite it. The guest rbp-chain walker stops
+	// when it reaches a frame whose return address is 0.
+	const auto guest_rbp = guest_rsp - 2u * sizeof(uint64_t);
 
 	auto* guest_root_frame = reinterpret_cast<uintptr_t*>(guest_rbp);
 	guest_root_frame[0]    = 0;
 	guest_root_frame[1]    = 0;
 
-	g_guest_entry_return_rsp = guest_rsp - sizeof(uint64_t);
+	g_guest_entry_return_rsp = guest_rbp - sizeof(uint64_t);
 
 	uintptr_t host_rsp = 0;
 	uintptr_t host_rbp = 0;
@@ -822,7 +825,7 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 	             "popq %%r13\n\t"
 	             "popq %%r12\n\t"
 	             : "=a"(ret), "+D"(arg), "+S"(func)
-	             : [guest_rsp] "r"(guest_rsp), [guest_rbp] "r"(guest_rbp)
+	             : [guest_rsp] "r"(guest_rbp), [guest_rbp] "r"(guest_rbp)
 	             : "cc", "memory", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2",
 	               "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11",
 	               "xmm12", "xmm13", "xmm14", "xmm15");
