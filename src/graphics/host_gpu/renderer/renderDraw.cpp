@@ -849,7 +849,7 @@ bool RenderExecutor::PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuf
 	return true;
 }
 
-static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
                            DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ctx    = buffer.GetRegisters();
@@ -872,21 +872,29 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoVS");
 	}
+	NoteDrawStage("ShaderCompileInfoVS");
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         state.vs_shader)) {
-		EXIT("ShaderCompileInfoVS failed for draw %s\n", draw.name);
+		// A shader the recompiler cannot lower must not abort the whole emulator. Report it and let
+		// the caller skip the draw, matching how other unsupported draw state is handled.
+		LOGF("ShaderCompileInfoVS failed for draw %s; skipping draw\n", draw.name);
+		return false;
 	}
 
 	if (!state.ps_active) {
-		return;
+		return true;
 	}
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoPS");
 	}
+	NoteDrawStage("ShaderCompileInfoPS");
 	if (!ShaderCompileInfoPS(pixel_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
-		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
+		LOGF("ShaderCompileInfoPS failed for draw %s; skipping draw\n", draw.name);
+		return false;
 	}
+	NoteDrawStage("RefreshShadersDone");
+	return true;
 }
 
 static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                     submit_id,
@@ -1238,6 +1246,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	                            instance_count, first_instance};
 	std::vector<uint16_t> expanded_indices;
 	if (expand_index8_to_u16) {
+		NoteDrawStage("ExpandIndex8");
 		EXIT_NOT_IMPLEMENTED(index_addr == nullptr);
 		const auto* src = static_cast<const uint8_t*>(index_addr);
 		expanded_indices.resize(index_count);
@@ -1256,13 +1265,19 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	index_source.type = index_type;
 
 	DrawRenderState state {};
+	NoteDrawStage("PrepareDrawRenderState");
 	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, true, state)) {
 		ResetBindings();
 		return;
 	}
 
-	RefreshShaders(buffer, draw, true, state);
+	NoteDrawStage("RefreshShaders");
+	if (!RefreshShaders(buffer, draw, true, state)) {
+		ResetBindings();
+		return;
+	}
 
+	NoteDrawStage("LogDrawState");
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, index_type_and_size, index_addr);
 
 	const auto vertex_offset =
@@ -1356,7 +1371,10 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, u
 	    (use_ngg_rectlist_draw &&
 	     ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
 
-	RefreshShaders(buffer, draw, false, state);
+	if (!RefreshShaders(buffer, draw, false, state)) {
+		ResetBindings();
+		return;
+	}
 
 	if (draw_prim7_as_ngg && state.vs_input_info.buffers_num == 0 &&
 	    state.vs_input_info.param_export_mask == 0 && state.ps_input_info.input_num != 0) {
