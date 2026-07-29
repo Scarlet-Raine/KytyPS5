@@ -430,6 +430,26 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 
 	(void)poll;
 	if (!TestWaitRegMemValue(*addr, ref, mask, func)) {
+		// An unsatisfied wait suspends PM4, and GpuState re-queues the submission at the HEAD of its
+		// ordered queue. If the awaited value never changes, every later submission behind it starves,
+		// including presentation, which the guest eventually reports as a render-thread timeout rather
+		// than as a GPU problem. Report a wait that stops making progress so the unsatisfiable
+		// condition can be identified from a log alone.
+		static const void* last_addr = nullptr;
+		static uint64_t    repeats   = 0;
+		if (static_cast<const void*>(addr) == last_addr) {
+			repeats++;
+		} else {
+			last_addr = static_cast<const void*>(addr);
+			repeats   = 0;
+		}
+		if (repeats == 50 || (repeats != 0 && repeats % 4000 == 0)) {
+			LOGF("CommandProcessor: wait_reg_mem unsatisfied %" PRIu64 " times addr=0x%016" PRIx64
+			     " value=0x%016" PRIx64 " ref=0x%016" PRIx64 " mask=0x%016" PRIx64
+			     " func=%" PRIu32 "\n",
+			     repeats, reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(*addr),
+			     static_cast<uint64_t>(ref), static_cast<uint64_t>(mask), func);
+		}
 		SuspendPm4();
 	}
 }
