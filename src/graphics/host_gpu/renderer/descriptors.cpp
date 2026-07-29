@@ -752,6 +752,18 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 		(void)SelectSampledColorView(image->info.pixel_format, pixel_format,
 		                             descriptor.DstSelXYZW());
 	}
+	// A same-class numeric reinterpretation (for example an RGBA16F view over an RGBA16
+	// image) means writer and reader disagree about this memory's encoding; one of the two
+	// format decodes is usually wrong and the result renders as false color. Keep a bounded
+	// record so the mismatching addresses and formats can be correlated.
+	if (!image->info.IsDepth() && image->info.pixel_format != pixel_format) {
+		LOGF_BOUNDED(64,
+		             "ResolveTexture: numeric reinterpretation addr=0x%010" PRIx64
+		             " image_fmt=%d view_fmt=%d guest_fmt=%u storage=%d rt=%d gpu_mod=%d\n",
+		             address, static_cast<int>(image->info.pixel_format),
+		             static_cast<int>(pixel_format), format, storage ? 1 : 0,
+		             image->usage.render_target ? 1 : 0, image->IsGpuModified() ? 1 : 0);
+	}
 	return {id, nullptr, std::move(desc)};
 }
 
