@@ -759,6 +759,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (!IR::BuildScalarProvenance(ir, error)) {
 		return false;
 	}
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after BuildScalarProvenance\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	std::string srt_error;
 	if (!IR::BuildSrtPlan(ir, &srt_error)) {
 		LOGF("%s SRT planning failed: %s\n", GetDumpLabel(options), srt_error.c_str());
@@ -771,6 +773,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (!dispatcher_reason.empty()) {
 		ir.fallback_reason = dispatcher_reason;
 	}
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after BuildSrtPlan\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 
 	if (!IR::PatchSrtReads(ir, error) || !IR::TrackResources(ir, error)) {
 		// Resource tracking is the recurring frontier for GPU-built descriptors. Dump the
@@ -786,6 +790,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (options.stage == ShaderType::Vertex) {
 		ir.info.vertex_offset_sgpr = embedded_fetch.vertex_offset_sgpr;
 	}
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after TrackResources\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	if (!dispatcher_fallback) {
 		std::string emitter_reason;
 		if (NeedsDispatcherForStructuredLoopHeader(ir, &emitter_reason)) {
@@ -800,6 +806,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	}
 
 	IR::ResourceSnapshot resources;
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after StructuredLoopHeaderCheck\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	if (options.resource_snapshot != nullptr) {
 		resources = *options.resource_snapshot;
 	} else {
@@ -828,6 +836,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (!IR::SpecializeResources(ir, resources, error)) {
 		return false;
 	}
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after SpecializeResources\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	// Diagnostic: a formatted buffer whose descriptor comes entirely from inline user SGPRs is a
 	// candidate programmable vertex fetch that embedded-fetch detection did not rewrite. Dump the
 	// decoded program once per such shader (bounded) so the detection gap can be characterized
@@ -871,6 +881,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (!IR::CollectShaderInfo(ir, info_options, error)) {
 		return false;
 	}
+	LOGF("%s phase step: stage=%s hash=0x%016" PRIx64 " after CollectShaderInfo\n",
+	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	IR::BindingLayoutOptions layout_options;
 	layout_options.descriptor_set       = options.descriptor_set;
 	layout_options.push_constant_offset = options.push_constant_offset;
