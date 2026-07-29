@@ -31,7 +31,8 @@
 namespace Libs {
 
 namespace LibKernel {
-void KernelDispatchPendingSignalForCurrentThread();
+void     KernelDispatchPendingSignalForCurrentThread();
+uint64_t StackChkGuardCurrent();
 } // namespace LibKernel
 
 namespace LibC {
@@ -250,6 +251,13 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 			PrintAbortPointerArrayCandidate(fmt::format("stack[{:02d}]", i).c_str(), value);
 		}
 	}
+
+	// A guest __stack_chk_fail reaches abort() with an intact stack when the guard VALUE changed
+	// between function entry and exit (the guest re-initialized the exported __stack_chk_guard).
+	// Report the live guard so that case is distinguishable from real stack corruption.
+	LOGF("Guest abort: live __stack_chk_guard = 0x%016" PRIx64 " (emulator initial 0x%016" PRIx64
+	     ")\n",
+	     LibKernel::StackChkGuardCurrent(), static_cast<uint64_t>(0xDeadBeef00000007ull));
 
 	EXIT("Guest abort()\n");
 	std::abort();
