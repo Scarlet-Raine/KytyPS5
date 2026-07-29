@@ -1117,6 +1117,7 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegist
 	    MakeShaderStageProgramKey(ShaderType::Pixel, shader_hash, program_id, lane_mask_mode);
 
 	{
+		Libs::Graphics::NoteDrawStage("PS:cache_lookup");
 		std::scoped_lock lock(g_shader_program_cache_mutex);
 		if (auto iter = g_shader_program_cache.find(key); iter != g_shader_program_cache.end()) {
 			for (const auto& permutation: iter->second) {
@@ -1131,9 +1132,21 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegist
 	}
 
 	std::vector<uint32_t> compiled_spirv;
+	Libs::Graphics::NoteDrawStage("PS:compile_spirv");
+	// The RDNA2 -> SPIR-V recompile happens with the renderer mutex held, so a shader the decoder
+	// cannot terminate on stalls the whole command processor. Record which shader is entering the
+	// compiler so a hang can be attributed to a specific program.
+	{
+		static std::atomic<uint32_t> compile_log_count {0};
+		if (compile_log_count.fetch_add(1, std::memory_order_relaxed) < 4096) {
+			LOGF("PS compile begin: hash=0x%016" PRIx64 " data_addr=0x%016" PRIx64 "\n", shader_hash,
+			     regs.ps_regs.data_addr);
+		}
+	}
 	if (!ShaderCompileSpirvPS(regs, sh, lane_mask_mode, ps_info, compiled_spirv)) {
 		return false;
 	}
+	Libs::Graphics::NoteDrawStage("PS:add_permutation");
 
 	ShaderProgramPermutation permutation {};
 	permutation.spirv   = std::move(compiled_spirv);
@@ -1403,7 +1416,11 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
-		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash, error.c_str());
+		// A shader the recompiler cannot lower (for example a program whose analysis does not
+		// converge) must skip its draw rather than abort the emulator. Report and return false.
+		LOGF("ShaderRecompiler VS failed hash=0x%016" PRIx64 ": %s; skipping draw\n",
+		     options.shader_hash, error.c_str());
+		return false;
 	}
 	DumpShaderRecompilerOriginal("vs", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler VS", options.shader_hash, result.spirv)) {
@@ -1456,7 +1473,10 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
-		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash, error.c_str());
+		// A shader the recompiler cannot lower must skip its draw rather than abort the emulator.
+		LOGF("ShaderRecompiler PS failed hash=0x%016" PRIx64 ": %s; skipping draw\n",
+		     options.shader_hash, error.c_str());
+		return false;
 	}
 	DumpShaderRecompilerOriginal("ps", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler PS", options.shader_hash, result.spirv)) {

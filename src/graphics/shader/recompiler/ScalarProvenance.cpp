@@ -247,7 +247,22 @@ public:
 			}
 		}
 		Queue(0);
+		// A monotone worklist over a finite lattice converges after each block is re-processed a
+		// bounded number of times. If the merge step is not monotone -- for example when a value id
+		// oscillates between a phi and a concrete predecessor value across loop iterations -- the
+		// worklist never drains. Cap the total number of block visits and fail the analysis instead
+		// of livelocking: provenance runs on the GPU command-processor thread while it holds the
+		// renderer mutex, so an unbounded loop here freezes all rendering until the guest's own
+		// watchdog kills the process. Failing cleanly turns that into a single skipped shader.
+		const uint64_t visit_cap = (static_cast<uint64_t>(block_count) + 1u) * 8192u;
+		uint64_t       visits    = 0;
 		while (!m_work.empty()) {
+			if (++visits > visit_cap) {
+				return Fail(error,
+				            fmt::format("scalar provenance did not converge after {} block visits "
+				                        "({} blocks); analysis is not monotone for this shader",
+				                        visits, block_count));
+			}
 			const auto block_index = m_work.front();
 			m_work.pop_front();
 			m_queued[block_index] = false;
