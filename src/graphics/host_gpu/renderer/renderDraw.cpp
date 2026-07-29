@@ -1025,9 +1025,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	auto& ucfg = buffer.GetUserConfig();
 
 	LogDrawPhase(draw.name, "PrepareBindings");
+	NoteDrawStage("PrepareBindings");
 	auto bindings = PrepareGraphicsBindings(buffer, state.vs_input_info.stage,
 	                                        state.ps_input_info.stage, state.ps_active);
+	NoteDrawStage("PrepareVertexBuffers");
 	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
+	NoteDrawStage("PrepareIndexBuffer");
 	auto index_binding   = PrepareIndexBuffer(buffer, index_source);
 	if (index_binding.invalid) {
 		static std::atomic<uint64_t> skip_log = 0;
@@ -1040,15 +1043,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	}
 	RebindVertexBuffers(buffer, state.vs_input_info, vertex_bindings);
 	RebindIndexBuffer(buffer, index_binding);
+	NoteDrawStage("AcquireRenderTargets");
 	state.rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info);
 
 	if (log_pipeline_phase) {
 		LogDrawPhase(draw.name, "CreatePipeline");
 	}
+	NoteDrawStage("CreateGraphicsPipeline");
 	auto& pipeline = m_context.GetPipelineCache().CreateGraphicsPipeline(
 	    state.color_info, state.color_count, state.depth_info, state.vs_input_info, buffer,
 	    &state.ps_input_info, topology, state.ps_active, state.vs_shader, state.ps_shader);
+	NoteDrawStage("CommitAndRecord");
 
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
@@ -1060,18 +1066,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x200u);
 	}
+	NoteDrawStage("CommitVertexBuffers");
 	CommitVertexBuffers(buffer, vk_buffer, vertex_bindings);
+	NoteDrawStage("CommitBindingsVertex");
 	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline.pipeline_layout,
 	               bindings.vertex);
 	if (bindings.pixel.has_value()) {
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 		}
+		NoteDrawStage("CommitBindingsPixel");
 		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline.pipeline_layout,
 		               *bindings.pixel);
 	}
+	NoteDrawStage("CommitIndexBuffer");
 	CommitIndexBuffer(buffer, vk_buffer, index_binding);
 
+	NoteDrawStage("DynamicParams");
 	const auto dynamic_params =
 	    BuildGraphicsDynamicParams(buffer, state.color_info, state.color_count, state.depth_info);
 	SetDynamicParams(buffer, vk_buffer, dynamic_params);
@@ -1080,11 +1091,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
+	NoteDrawStage("BeginRendering");
 	m_context.GetCommandScheduler().BeginRendering(state.rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
+	NoteDrawStage("EmitDrawPrimitives");
 	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
 
 	if (set_auto_debug) {
@@ -1098,9 +1111,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
 	if (shader_write_stages) {
+		NoteDrawStage("ShaderWriteBarrier");
 		m_context.GetCommandScheduler().EndRendering();
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
 	}
+	NoteDrawStage("DrawComplete");
 	LogDrawPhase(draw.name, "DrawComplete");
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
@@ -1122,7 +1137,9 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	                    index_count, flags, type, instance_count,
 	                    reinterpret_cast<uint64_t>(index_addr));
 
+	NoteDrawStage("DrawIndexLock");
 	Common::LockGuard lock(m_context.GetMutex());
+	NoteDrawStage("DrawIndexSetup");
 	if (index_count == 0) {
 		return;
 	}
@@ -1256,7 +1273,9 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer,
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndexAuto), submit_id,
 	                    index_count, flags, first_vertex, instance_count, first_instance);
 
+	NoteDrawStage("DrawAutoLock");
 	Common::LockGuard lock(m_context.GetMutex());
+	NoteDrawStage("DrawAutoSetup");
 	if (index_count == 0) {
 		return;
 	}
