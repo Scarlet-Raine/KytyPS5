@@ -5457,6 +5457,38 @@ void TestNewShaderRecompilerCfgDuplicateMergeStructuredSplit() {
 	CheckSpirvBinaryValidates(result.spirv);
 }
 
+void TestNewShaderRecompilerCfgNestedSelectionSharedMerge() {
+	// Two nested selection headers (0 outer, 1 inner) whose nearest common post-dominator
+	// is the SAME merge block. This is the shape that causes "duplicate structured merge
+	// block" in GTA SA: TDE pixel shaders and forces the dispatcher fallback.
+	// Shape: if (cond1) { if (cond2) { work } /* fallthrough */ } /* merge */
+	const uint32_t shader[] = {
+	    EncodeSopc(0x06, 0, 0), // inst 0: s_cmp_eq_u32 s0, s0  [block 0 entry]
+	    EncodeSopp(0x05, 3),    // inst 1: s_cbranch_scc0 +3 -> inst 5 (merge/endpgm)
+	    EncodeSopc(0x06, 1, 1), // inst 2: s_cmp_eq_u32 s1, s1  [block 1]
+	    EncodeSopp(0x05, 1),    // inst 3: s_cbranch_scc0 +1 -> inst 5 (merge/endpgm)
+	    EncodeSMovB32(2, 129),  // inst 4: s_mov_b32 s2, 1      [block 2: inner then-body]
+	    0xbf810000u,            // inst 5: s_endpgm              [block 3: shared merge]
+	};
+
+	ShaderRecompiler::CompileOptions options;
+	options.stage   = ShaderType::Compute;
+	options.dump_ir = true;
+
+	ShaderRecompiler::CompileResult result;
+	std::string                     error;
+	Check(ShaderRecompiler::TryRecompile(shader, options, result, &error), error.c_str());
+	Check(Common::ContainsStr(result.ir_dump, "mode=structured"),
+	      "nested selection shared merge should stay on structured path");
+	Check(!Common::ContainsStr(result.ir_dump, "duplicate structured merge block"),
+	      "nested selection shared merge was not split before structurization");
+	Check(SpirvContainsOpcode(result.spirv, 247),
+	      "nested selection shared merge SPIR-V lacks OpSelectionMerge");
+	Check(!SpirvContainsOpcode(result.spirv, 251),
+	      "nested selection shared merge unexpectedly used dispatcher OpSwitch");
+	CheckSpirvBinaryValidates(result.spirv);
+}
+
 void TestNewShaderRecompilerCfgIrreducibleDispatcher() {
 	const uint32_t shader[] = {
 	    EncodeSopp(0x05, 2),       // entry -> B, fallthrough A
@@ -7088,6 +7120,7 @@ int main() {
 	TestNewShaderRecompilerCfgSharedOuterAndLoopMerge();
 	TestNewShaderRecompilerCfgLoopSharedContinueSelectionMerges();
 	TestNewShaderRecompilerCfgDuplicateMergeStructuredSplit();
+	TestNewShaderRecompilerCfgNestedSelectionSharedMerge();
 	TestNewShaderRecompilerCfgIrreducibleDispatcher();
 	TestNewShaderRecompilerExecMaskHelpers();
 	TestComputeShaderInputWaveSize();
