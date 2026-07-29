@@ -254,9 +254,50 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 	// A guest __stack_chk_fail reaches abort() with an intact stack when the guard VALUE changed
 	// between function entry and exit (the guest re-initialized the exported __stack_chk_guard).
 	// Report the live guard so that case is distinguishable from real stack corruption.
+	const auto live_guard = LibKernel::StackChkGuardCurrent();
 	LOGF("Guest abort: live __stack_chk_guard = 0x%016" PRIx64 " (emulator initial 0x%016" PRIx64
 	     ")\n",
-	     LibKernel::StackChkGuardCurrent(), static_cast<uint64_t>(0xDeadBeef00000007ull));
+	     live_guard, static_cast<uint64_t>(0xDeadBeef00000007ull));
+
+	// Walk the guest frame chain and report each frame's cookie slots. A frame whose slot should
+	// hold the guard but does not identifies the corrupted canary, and the value it holds instead
+	// is the corruptor's fingerprint (e.g. ASCII, a pointer, or a small count).
+	if (rbp != 0) {
+		auto* linker     = Common::Singleton<Loader::RuntimeLinker>::Instance();
+		auto  frame_addr = rbp;
+		LOGF("Guest abort: frame cookie scan (guard 0x%016" PRIx64 "):\n", live_guard);
+		for (int frame = 0; frame < 8; frame++) {
+			if (!Graphics::HostMemoryIsReadable(frame_addr) ||
+			    !Graphics::HostMemoryIsReadable(frame_addr + sizeof(uint64_t))) {
+				break;
+			}
+			const auto* f   = reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(frame_addr));
+			const auto  ret_addr = f[1];
+			auto*       program  = linker->FindProgramByAddr(ret_addr);
+			LOGF("\t frame[%d] rbp=0x%016" PRIx64 " ret=0x%016" PRIx64 " (%s+0x%" PRIx64 ")\n", frame,
+			     frame_addr, ret_addr,
+			     program != nullptr
+			         ? Common::PathToString(program->file_name.filename()).c_str()
+			         : "?",
+			     program != nullptr ? ret_addr - program->base_vaddr : 0);
+			for (int slot = 1; slot <= 12; slot++) {
+				const auto addr = frame_addr - static_cast<uint64_t>(slot) * sizeof(uint64_t);
+				if (!Graphics::HostMemoryIsReadable(addr)) {
+					break;
+				}
+				const auto value = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(addr));
+				if (value == live_guard) {
+					LOGF("\t\t [rbp-0x%02x] = 0x%016" PRIx64 "  <-- intact cookie\n",
+					     slot * 8, value);
+				}
+			}
+			const auto next = f[0];
+			if (next <= frame_addr || (next & (sizeof(uint64_t) - 1u)) != 0) {
+				break;
+			}
+			frame_addr = next;
+		}
+	}
 
 	EXIT("Guest abort()\n");
 	std::abort();
