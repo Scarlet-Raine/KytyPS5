@@ -1620,6 +1620,29 @@ Program* RuntimeLinker::FindProgramByAddr(uint64_t vaddr) {
 	return nullptr;
 }
 
+bool RuntimeLinker::IsExecutableAddr(uint64_t vaddr) {
+	auto* program = FindProgramByAddr(vaddr);
+	if (program == nullptr || program->elf == nullptr) {
+		return false;
+	}
+	const auto* ehdr = program->elf->GetEhdr();
+	const auto* phdr = program->elf->GetPhdr();
+	if (ehdr == nullptr || phdr == nullptr) {
+		return false;
+	}
+	const auto offset = vaddr - program->base_vaddr;
+	for (Elf64_Half i = 0; i < ehdr->e_phnum; i++) {
+		const auto& p = phdr[i];
+		if (p.p_type != PT_LOAD || (p.p_flags & PF_X) == 0) {
+			continue;
+		}
+		if (offset >= p.p_vaddr && offset < p.p_vaddr + p.p_memsz) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void RuntimeLinker::StackTrace(uint64_t frame_ptr) {
 	void* stack[20];
 	int   depth = 20;

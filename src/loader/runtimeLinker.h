@@ -144,6 +144,10 @@ public:
 	void DbgDump(const std::string& folder);
 
 	Program* LoadProgram(const std::filesystem::path& elf_name);
+	// True when `vaddr` lies in an executable segment of a loaded program, i.e. it can plausibly be
+	// a return address. FindProgramByAddr alone matches data segments too, so a raw stack scan
+	// otherwise reports data pointers as if they were call frames.
+	bool     IsExecutableAddr(uint64_t vaddr);
 	void     SaveMainProgram(const std::filesystem::path& elf_name);
 	void     SaveProgram(Program* program, const std::filesystem::path& elf_name);
 	void     UnloadProgram(Program* program);

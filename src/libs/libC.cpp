@@ -276,7 +276,7 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 			}
 			const auto value   = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(addr));
 			auto*      program = linker->FindProgramByAddr(value);
-			if (program == nullptr) {
+			if (program == nullptr || !linker->IsExecutableAddr(value)) {
 				continue;
 			}
 			auto module_name = Common::PathToString(program->file_name.filename());
