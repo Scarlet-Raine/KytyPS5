@@ -56,12 +56,42 @@ enum class CpPhase : uint32_t {
 	RunningCommand = 2,
 	Processing    = 3,
 	Requeued      = 4,
+	BufferInit    = 5,
+	ProcessConstant = 6,
+	ProcessCommand  = 7,
+	BufferFlush     = 8,
+	GarbageCollect  = 9,
+	EopTrigger      = 10,
+	PrepareCpuFlip  = 11,
+	BarrierCheckBuffer = 12,
+	BarrierLock        = 13,
+	BarrierRecord      = 14,
 };
 
 static std::atomic_uint64_t g_cp_loops {0};
 static std::atomic_uint32_t g_cp_phase {static_cast<uint32_t>(CpPhase::Idle)};
 static std::atomic_uint64_t g_cp_submission {0};
 static std::atomic_uint32_t g_cp_queue {0};
+// Synchronization cost. A full GPU finish per draw or per event collapses frame throughput while
+// leaving the processor apparently healthy, so these rates are needed to tell "too slow" apart from
+// "stuck".
+static std::atomic_uint64_t g_cp_barriers {0};
+static std::atomic_uint64_t g_cp_gpu_syncs {0};
+// Packet currently being dispatched. When the processor blocks inside packet dispatch, the opcode
+// and register of the in-flight packet identify the handler responsible.
+static std::atomic_uint32_t g_cp_packet_op {0xffffffffu};
+static std::atomic_uint32_t g_cp_packet_reg {0xffffffffu};
+static std::atomic_uint64_t g_cp_packets {0};
+// Draw stage published by the renderer. A draw packet covers descriptor preparation, render-target
+// acquisition and pipeline creation, each of which can block, so the packet opcode alone is not
+// enough to place a stall.
+static std::atomic<const char*> g_cp_draw_stage {nullptr};
+static std::atomic_uint64_t     g_cp_draw_stages {0};
+
+void NoteDrawStage(const char* stage) {
+	g_cp_draw_stage.store(stage, std::memory_order_relaxed);
+	g_cp_draw_stages.fetch_add(1, std::memory_order_relaxed);
+}
 
 static const char* CpPhaseName(uint32_t phase) {
 	switch (static_cast<CpPhase>(phase)) {
@@ -70,6 +100,16 @@ static const char* CpPhaseName(uint32_t phase) {
 		case CpPhase::RunningCommand: return "command";
 		case CpPhase::Processing: return "processing";
 		case CpPhase::Requeued: return "requeued";
+		case CpPhase::BufferInit: return "buffer_init";
+		case CpPhase::ProcessConstant: return "process_ce";
+		case CpPhase::ProcessCommand: return "process_de";
+		case CpPhase::BufferFlush: return "buffer_flush";
+		case CpPhase::GarbageCollect: return "gc";
+		case CpPhase::EopTrigger: return "eop_trigger";
+		case CpPhase::PrepareCpuFlip: return "prepare_cpu_flip";
+		case CpPhase::BarrierCheckBuffer: return "barrier_check_buffer";
+		case CpPhase::BarrierLock: return "barrier_lock";
+		case CpPhase::BarrierRecord: return "barrier_record";
 	}
 	return "?";
 }
@@ -101,11 +141,24 @@ static void NoteFlipProgress() {
 			}
 			const auto stalled = std::chrono::duration<double>(now - last_move).count();
 			LOGF("RenderProgress: t=%.2f flips=%" PRIu64 " no_flip_for=%.2fs cp_phase=%s cp_loops=%" PRIu64
-			     " cp_submission=%" PRIu64 " cp_queue=%" PRIu32 "\n",
+			     " cp_submission=%" PRIu64 " cp_queue=%" PRIu32 " barriers=%" PRIu64 " gpu_syncs=%" PRIu64
+			     "\n",
 			     elapsed, flips, stalled, CpPhaseName(g_cp_phase.load(std::memory_order_relaxed)),
 			     g_cp_loops.load(std::memory_order_relaxed),
 			     g_cp_submission.load(std::memory_order_relaxed),
-			     g_cp_queue.load(std::memory_order_relaxed));
+			     g_cp_queue.load(std::memory_order_relaxed),
+			     g_cp_barriers.load(std::memory_order_relaxed),
+			     g_cp_gpu_syncs.load(std::memory_order_relaxed));
+			LOGF("RenderProgress:   packet op=0x%02" PRIx32 " reg=0x%02" PRIx32 " packets=%" PRIu64
+			     " draw_stage=%s draw_stages=%" PRIu64 "\n",
+			     g_cp_packet_op.load(std::memory_order_relaxed),
+			     g_cp_packet_reg.load(std::memory_order_relaxed),
+			     g_cp_packets.load(std::memory_order_relaxed),
+			     [] {
+				     const auto* s = g_cp_draw_stage.load(std::memory_order_relaxed);
+				     return s != nullptr ? s : "none";
+			     }(),
+			     g_cp_draw_stages.load(std::memory_order_relaxed));
 		}
 	}).detach();
 }
@@ -710,6 +763,7 @@ bool GpuState::Process(Submission& submission) {
 		cp.SetFlip({});
 	}
 
+	SetCpPhase(CpPhase::BufferInit);
 	cp.BufferInit();
 	bool complete = true;
 
@@ -720,6 +774,7 @@ bool GpuState::Process(Submission& submission) {
 			for (;;) {
 				bool round_progress = false;
 				if (!submission.constant_complete) {
+					SetCpPhase(CpPhase::ProcessConstant);
 					submission.constant_complete =
 					    cp.Process(
 					        submission.constant_execution, submission.constant_commands.Data(),
@@ -728,6 +783,7 @@ bool GpuState::Process(Submission& submission) {
 				}
 				cp.SetCeComplete(submission.constant_complete);
 				if (!submission.command_complete) {
+					SetCpPhase(CpPhase::ProcessCommand);
 					submission.command_complete =
 					    cp.Process(submission.command_execution, submission.commands.Data(),
 					               submission.commands.Size()) == Pm4ProcessResult::Complete;
@@ -741,13 +797,17 @@ bool GpuState::Process(Submission& submission) {
 			}
 			if (progressed) {
 				if (complete) {
+					SetCpPhase(CpPhase::GarbageCollect);
 					m_renderer.GetGpuResources().RunGarbageCollector();
 				}
+				SetCpPhase(CpPhase::BufferFlush);
 				cp.BufferFlush();
 			} else if (complete) {
+				SetCpPhase(CpPhase::GarbageCollect);
 				m_renderer.GetGpuResources().RunGarbageCollector();
 			}
 			if (complete && submission.trigger_agc_interrupt_on_done) {
+				SetCpPhase(CpPhase::EopTrigger);
 				m_renderer.TriggerEopEvent(0);
 			}
 			break;
@@ -782,6 +842,7 @@ bool GpuState::Process(Submission& submission) {
 			break;
 		}
 		case SubmissionType::FlipPreparation:
+			SetCpPhase(CpPhase::PrepareCpuFlip);
 			m_renderer.GetGpuResources().RunGarbageCollector();
 			cp.PrepareCpuFlip(submission.flip_request_id);
 			break;
@@ -941,6 +1002,9 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 			     total_dw - remaining_dw, packet_header);
 		}
 
+		g_cp_packets.fetch_add(1, std::memory_order_relaxed);
+		g_cp_packet_op.store(opcode, std::memory_order_relaxed);
+		g_cp_packet_reg.store(KYTY_PM4_R(packet_header), std::memory_order_relaxed);
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		EXIT_IF(packet_dw > remaining_dw);
@@ -1593,9 +1657,15 @@ void CommandProcessor::WriteAtEndOfPipe64(uint32_t cache_policy, uint32_t event_
 }
 
 void CommandProcessor::EmitGlobalBarrier() {
+	g_cp_barriers.fetch_add(1, std::memory_order_relaxed);
+	// Split the phases: this runs on the command-processor thread and both acquiring a command buffer
+	// and taking the renderer mutex can block, so the two have to be distinguishable in a stall dump.
+	SetCpPhase(CpPhase::BarrierCheckBuffer);
 	CheckBuffer();
 
+	SetCpPhase(CpPhase::BarrierLock);
 	Common::LockGuard lock(m_renderer.GetMutex());
+	SetCpPhase(CpPhase::BarrierRecord);
 
 	vk::MemoryBarrier2 barrier {};
 	barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -1608,6 +1678,9 @@ void CommandProcessor::EmitGlobalBarrier() {
 	dependency.pMemoryBarriers    = &barrier;
 	GetScheduler().EndRendering();
 	CurrentBuffer().Handle().pipelineBarrier2(dependency);
+	// Restore the enclosing phase so that a later block in packet dispatch is not misreported as a
+	// barrier that had already completed.
+	SetCpPhase(CpPhase::ProcessCommand);
 }
 
 void CommandProcessor::TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id) {
@@ -1751,6 +1824,7 @@ void CommandProcessor::PrepareCpuFlip(uint64_t request_id) {
 }
 
 void CommandProcessor::SynchronizeGpu() {
+	g_cp_gpu_syncs.fetch_add(1, std::memory_order_relaxed);
 	GetScheduler().FinishCurrent();
 }
 
