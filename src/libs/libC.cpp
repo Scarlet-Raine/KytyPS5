@@ -258,6 +258,35 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 	     ")\n",
 	     LibKernel::StackChkGuardCurrent(), static_cast<uint64_t>(0xDeadBeef00000007ull));
 
+	// Scan-based guest backtrace. The rbp chain cannot be walked from here because the emulator's
+	// own HLE frames are not part of the guest chain, so recover probable return addresses by
+	// scanning the guest stack for values that resolve inside a loaded module. This is noisy (it
+	// also catches stale slots and function pointers) but it does not depend on frame layout, and
+	// abort() is a generic handler whose caller chain is the only thing identifying what failed.
+	if (rsp != 0) {
+		auto*              linker = Common::Singleton<Loader::RuntimeLinker>::Instance();
+		constexpr uint32_t SCAN_WORDS = 2048;
+		constexpr uint32_t REPORT_MAX = 48;
+		uint32_t           reported   = 0;
+		LOGF("Guest abort: stack scan for module addresses (rsp=0x%016" PRIx64 "):\n", rsp);
+		for (uint32_t i = 0; i < SCAN_WORDS && reported < REPORT_MAX; i++) {
+			const auto addr = rsp + static_cast<uint64_t>(i) * sizeof(uint64_t);
+			if (!Graphics::HostMemoryIsReadable(addr)) {
+				continue;
+			}
+			const auto value   = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(addr));
+			auto*      program = linker->FindProgramByAddr(value);
+			if (program == nullptr) {
+				continue;
+			}
+			auto module_name = Common::PathToString(program->file_name.filename());
+			LOGF("\t +0x%04" PRIx32 " 0x%016" PRIx64 " %s+0x%" PRIx64 "\n",
+			     static_cast<uint32_t>(i * sizeof(uint64_t)), value, module_name.c_str(),
+			     value - program->base_vaddr);
+			reported++;
+		}
+	}
+
 	EXIT("Guest abort()\n");
 	std::abort();
 }
