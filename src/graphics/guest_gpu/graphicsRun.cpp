@@ -46,6 +46,38 @@ static thread_local bool              g_gpu_thread             = false;
 static std::atomic_uint64_t g_flip_count {0};
 static std::atomic_bool     g_flip_watchdog_started {false};
 
+// Command-processor liveness, published by the GPU thread and sampled by the presentation
+// watchdog. Attributing a presentation stall requires knowing whether the processor is looping,
+// parked inside one submission, or blocked in a host call, and the stalled thread cannot be relied
+// on to report that itself.
+enum class CpPhase : uint32_t {
+	Idle          = 0,
+	SelectingWork = 1,
+	RunningCommand = 2,
+	Processing    = 3,
+	Requeued      = 4,
+};
+
+static std::atomic_uint64_t g_cp_loops {0};
+static std::atomic_uint32_t g_cp_phase {static_cast<uint32_t>(CpPhase::Idle)};
+static std::atomic_uint64_t g_cp_submission {0};
+static std::atomic_uint32_t g_cp_queue {0};
+
+static const char* CpPhaseName(uint32_t phase) {
+	switch (static_cast<CpPhase>(phase)) {
+		case CpPhase::Idle: return "idle";
+		case CpPhase::SelectingWork: return "selecting";
+		case CpPhase::RunningCommand: return "command";
+		case CpPhase::Processing: return "processing";
+		case CpPhase::Requeued: return "requeued";
+	}
+	return "?";
+}
+
+static void SetCpPhase(CpPhase phase) {
+	g_cp_phase.store(static_cast<uint32_t>(phase), std::memory_order_relaxed);
+}
+
 static void NoteFlipProgress() {
 	g_flip_count.fetch_add(1, std::memory_order_relaxed);
 
@@ -68,8 +100,12 @@ static void NoteFlipProgress() {
 				last_move = now;
 			}
 			const auto stalled = std::chrono::duration<double>(now - last_move).count();
-			LOGF("RenderProgress: t=%.2f flips=%" PRIu64 " no_flip_for=%.2fs\n", elapsed, flips,
-			     stalled);
+			LOGF("RenderProgress: t=%.2f flips=%" PRIu64 " no_flip_for=%.2fs cp_phase=%s cp_loops=%" PRIu64
+			     " cp_submission=%" PRIu64 " cp_queue=%" PRIu32 "\n",
+			     elapsed, flips, stalled, CpPhaseName(g_cp_phase.load(std::memory_order_relaxed)),
+			     g_cp_loops.load(std::memory_order_relaxed),
+			     g_cp_submission.load(std::memory_order_relaxed),
+			     g_cp_queue.load(std::memory_order_relaxed));
 		}
 	}).detach();
 }
@@ -565,6 +601,8 @@ void GpuState::ThreadRun(void* data) {
 	g_gpu_thread = true;
 
 	for (;;) {
+		g_cp_loops.fetch_add(1, std::memory_order_relaxed);
+		SetCpPhase(CpPhase::SelectingWork);
 		Submission                   submission;
 		Common::UniqueFunction<void> command;
 		bool                         has_submission = false;
@@ -595,6 +633,7 @@ void GpuState::ThreadRun(void* data) {
 				}
 				if (selected_queue < 0) {
 					gpu->m_processing = false;
+					SetCpPhase(CpPhase::Requeued);
 					gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
 					for (auto& queue: gpu->m_queues) {
 						if (!queue.empty()) {
@@ -620,6 +659,7 @@ void GpuState::ThreadRun(void* data) {
 
 		if (command) {
 			EXIT_IF(g_current_processor != nullptr);
+			SetCpPhase(CpPhase::RunningCommand);
 			command();
 
 			Common::LockGuard lock(gpu->m_queue_mutex);
@@ -631,6 +671,8 @@ void GpuState::ThreadRun(void* data) {
 		}
 
 		EXIT_IF(!has_submission);
+		SetCpPhase(CpPhase::Processing);
+		g_cp_queue.store(submission.queue_id, std::memory_order_relaxed);
 		const bool complete = gpu->Process(submission);
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
@@ -663,6 +705,7 @@ bool GpuState::Process(Submission& submission) {
 	if (first_slice) {
 		submission.started = true;
 		cp.SetSubmitId(++m_submit_id);
+		g_cp_submission.store(m_submit_id, std::memory_order_relaxed);
 		cp.ResetDeCe();
 		cp.SetFlip({});
 	}

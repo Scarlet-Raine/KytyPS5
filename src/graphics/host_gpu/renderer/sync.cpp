@@ -95,42 +95,24 @@ static void RecordEndOfPipeSignal(const EndOfPipeSignal& signal) {
 	auto& scheduler = renderer.GetCommandScheduler();
 
 	// Deliver the end-of-pipe value to guest memory. A guest uses these writes as GPU labels and
-	// then blocks on them with wait_reg_mem; if the value never lands, the command processor parks on
-	// that wait forever and every later submission on the same ordered queue starves, which surfaces
-	// only as the guest's own render-thread timeout.
+	// then blocks on them with wait_reg_mem, so the value has to actually land.
 	//
-	// The store must happen when the work retires, not when the packet is parsed. Publishing the
-	// label early loses a race against the guest initializing or recycling the slot it is about to
-	// wait on: the guest's own store lands after ours and the wait can then never be satisfied.
-	//
-	// The destination is committed here, on the command-processor thread, by writing back the value
-	// already present. Guest pages are demand-backed, and a store issued from an asynchronous GPU
-	// completion cannot resolve a guest-memory fault in that context.
+	// The store is issued here, on the command-processor thread. Deferring it to the retirement path
+	// is closer to hardware ordering but is not safe: guest pages are demand-backed and can be
+	// re-protected at any time, so a store from an asynchronous GPU completion trips the fail-fast in
+	// gpuResourceManager. Committing the page before deferring does not close that window either --
+	// it was tried and still faulted. Submissions execute in order, so publishing here is ordered
+	// ahead of the waits that follow.
 	if (signal.write_size.has_value() && signal.destination.has_value()) {
 		const auto destination = static_cast<uintptr_t>(*signal.destination);
 		const auto size        = *signal.write_size;
 		const auto value       = signal.write_value;
 		if (size == EndOfPipeWriteSize::Qword) {
-			uint64_t present = 0;
-			std::memcpy(&present, reinterpret_cast<const void*>(destination), sizeof(present));
-			std::memcpy(reinterpret_cast<void*>(destination), &present, sizeof(present));
+			std::memcpy(reinterpret_cast<void*>(destination), &value, sizeof(value));
 		} else {
-			uint32_t present = 0;
-			std::memcpy(&present, reinterpret_cast<const void*>(destination), sizeof(present));
-			std::memcpy(reinterpret_cast<void*>(destination), &present, sizeof(present));
+			const auto narrowed = static_cast<uint32_t>(value);
+			std::memcpy(reinterpret_cast<void*>(destination), &narrowed, sizeof(narrowed));
 		}
-		const auto submit_id = signal.submit_id;
-		scheduler.DeferOperation([destination, size, value, submit_id] {
-			if (size == EndOfPipeWriteSize::Qword) {
-				std::memcpy(reinterpret_cast<void*>(destination), &value, sizeof(value));
-			} else {
-				const auto narrowed = static_cast<uint32_t>(value);
-				std::memcpy(reinterpret_cast<void*>(destination), &narrowed, sizeof(narrowed));
-			}
-			LOGF("eop_write: dst=0x%016" PRIx64 " value=0x%016" PRIx64 " size=%" PRIu32
-			     " submit=%" PRIu64 "\n",
-			     static_cast<uint64_t>(destination), value, static_cast<uint32_t>(size), submit_id);
-		});
 	}
 
 	if (signal.completion != EndOfPipeCompletion::None) {
