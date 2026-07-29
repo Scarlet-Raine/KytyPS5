@@ -3722,15 +3722,10 @@ static void submit_dcb(uint32_t* dcb, uint32_t size_in_dwords) {
 			// that distinguishes a missing write from an ordering deadlock.
 			if (((cmd_id >> 8u) & 0xffu) == Pm4::IT_NOP &&
 			    KYTY_PM4_R(cmd_id) == Pm4::R_RELEASE_MEM && len >= 7) {
-				static uint32_t release_log_count = 0;
-				if (release_log_count++ < 4096) {
-					const auto dst =
-					    dcb[offset + 3] | (static_cast<uint64_t>(dcb[offset + 4]) << 32u);
-					const auto val =
-					    dcb[offset + 5] | (static_cast<uint64_t>(dcb[offset + 6]) << 32u);
-					LOGF("submit_dcb: release_mem dst=0x%016" PRIx64 " value=0x%016" PRIx64 "\n",
-					     dst, val);
-				}
+				const auto dst = dcb[offset + 3] | (static_cast<uint64_t>(dcb[offset + 4]) << 32u);
+				const auto val = dcb[offset + 5] | (static_cast<uint64_t>(dcb[offset + 6]) << 32u);
+				LOGF("submit_dcb: release_mem dst=0x%016" PRIx64 " value=0x%016" PRIx64 "\n", dst,
+				     val);
 			}
 			offset += len;
 		}
