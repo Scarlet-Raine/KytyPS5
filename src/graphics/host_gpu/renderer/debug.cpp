@@ -1223,7 +1223,9 @@ void hw_check(const RenderCommandBuffer& buffer) {
 	AaCheck(aa, ac);
 	log_phase("done");
 
-	if (RenderTargetMaskHasBoundMrt(buffer)) {
+	// Per-draw output: allowed only under the explicit debug dump, like log_phase above, so
+	// steady-state draw traffic cannot saturate the log sink.
+	if (graphics_debug_dump_enabled() && RenderTargetMaskHasBoundMrt(buffer)) {
 		LOGF("MRT render target mask: 0x%08" PRIx32 "\n", hw.GetRenderTargetMask());
 		for (uint32_t i = 0; i < 8; i++) {
 			const auto& mrt = hw.GetRenderTarget(i);
