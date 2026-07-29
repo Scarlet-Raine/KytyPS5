@@ -159,6 +159,14 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 		BindNullStorageBuffer(context, result);
 		return result;
 	}
+	// A descriptor can also resolve to a range the GPU cannot read at all (never-mapped guest
+	// memory from a stale/garbage descriptor). Hardware reads 0 from such a fetch, so bind the null
+	// buffer instead of tripping the strict GPU-access guard. Genuinely-mapped buffers are
+	// unaffected and still take the normal path below.
+	if (!context.GetBufferCache().IsGpuReadable(address, size)) {
+		BindNullStorageBuffer(context, result);
+		return result;
+	}
 	auto binding = context.GetBufferCache().ObtainBuffer(
 	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
 	const auto aligned_offset = binding.offset - binding.offset % alignment;
