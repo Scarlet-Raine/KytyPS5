@@ -673,6 +673,7 @@ struct PreparedIndexBuffer {
 	vk::DeviceSize        offset   = 0;
 	vk::IndexType         type     = vk::IndexType::eUint16;
 	bool                  streamed = false;
+	bool                  invalid  = false;
 };
 
 static uint64_t VertexBufferDescriptorSize(const ShaderVertexInputBuffer& buffer) {
@@ -823,7 +824,11 @@ static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                 
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& b    = vs_input_info.buffers[i];
 		const auto  size = VertexBufferDescriptorSize(b);
-		if (size == 0) {
+		// A zero-size or unmapped vertex-fetch V# (the fetch-shader ABI that would populate it is
+		// emulated away, so an unrecognized fetch can resolve to a stale/unmapped guest address).
+		// Hardware reads 0 from such a fetch; bind the null buffer instead of tripping the strict
+		// GPU-access guard. A genuinely-mapped vertex buffer stays on the normal path.
+		if (size == 0 || !buffer.GetContext().GetBufferCache().IsGpuReadable(b.addr, size)) {
 			auto owner = buffer.GetContext().GetBufferCache().ObtainNullBuffer();
 			bindings.push_back({owner, owner->Handle(), 0});
 		} else {
@@ -841,7 +846,7 @@ static void RebindVertexBuffers(RenderCommandBuffer&         buffer,
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex);
-		if (size == 0) {
+		if (size == 0 || !buffer.GetContext().GetBufferCache().IsGpuReadable(vertex.addr, size)) {
 			auto owner  = buffer.GetContext().GetBufferCache().ObtainNullBuffer();
 			bindings[i] = {owner, owner->Handle(), 0};
 		} else {
@@ -868,6 +873,11 @@ static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffe
 		prepared.buffer   = binding.buffer;
 		prepared.offset   = binding.offset;
 		prepared.streamed = true;
+	} else if (!buffer.GetContext().GetBufferCache().IsGpuReadable(source.address, source.size)) {
+		// An index buffer at unmapped guest memory means the draw references invalid memory (a
+		// stale/garbage draw command). Mark it invalid so the caller skips the whole draw instead
+		// of aborting the GPU-access guard or reading a huge index count out of bounds.
+		prepared.invalid = true;
 	} else {
 		auto binding =
 		    buffer.GetContext().GetBufferCache().ObtainBuffer(buffer, source.address, source.size);
@@ -879,7 +889,7 @@ static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffe
 }
 
 static void RebindIndexBuffer(RenderCommandBuffer& buffer, PreparedIndexBuffer& prepared) {
-	if (prepared.size == 0 || prepared.streamed) {
+	if (prepared.size == 0 || prepared.streamed || prepared.invalid) {
 		return;
 	}
 	auto binding =
@@ -1019,6 +1029,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	                                        state.ps_input_info.stage, state.ps_active);
 	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
 	auto index_binding   = PrepareIndexBuffer(buffer, index_source);
+	if (index_binding.invalid) {
+		static std::atomic<uint64_t> skip_log = 0;
+		if (skip_log.fetch_add(1) < 32) {
+			LOGF("draw %s skipped: index buffer 0x%016" PRIx64 " (size 0x%" PRIx64
+			     ") is not GPU-readable\n",
+			     draw.name, index_source.address, index_source.size);
+		}
+		return;
+	}
 	RebindVertexBuffers(buffer, state.vs_input_info, vertex_bindings);
 	RebindIndexBuffer(buffer, index_binding);
 	state.rendering =

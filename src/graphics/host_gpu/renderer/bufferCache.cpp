@@ -1195,6 +1195,11 @@ void BufferCache::ValidateGpuAccess(uint64_t vaddr, uint64_t size, bool is_read,
 	}
 }
 
+bool BufferCache::IsGpuReadable(uint64_t vaddr, uint64_t size) const {
+	return vaddr != 0 && size != 0 && size <= UINT64_MAX - vaddr &&
+	       m_page_manager.HasGpuAccess(vaddr, size, GpuAccess::Read);
+}
+
 void BufferCache::RunGarbageCollector() {
 	std::lock_guard transaction(m_resource_mutex);
 	const auto      tick = m_gc_tick++;
