@@ -1098,6 +1098,14 @@ void EmitFunction(EmitterState& state, const IR::Program& program) {
 	EmitVertexInputRegisters(state);
 	EmitStorageBufferOffsets(state);
 	EmitAddressBufferOffsets(state);
+	// WriteToSlice volume rendering: route gl_Layer = gl_InstanceIndex so a layered instanced
+	// draw writes each instance to its own volume slice (what the dropped geometry shader did).
+	if (state.layer_variable != 0) {
+		const auto instance = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpLoad, state.int_type, instance, state.layer_instance_index_variable});
+		state.builder.AddFunction({OpStore, state.layer_variable, instance});
+	}
 	if (state.dispatcher_fallback) {
 		EmitDispatcherFunction(state, program);
 		state.builder.AddFunction({OpFunctionEnd});
