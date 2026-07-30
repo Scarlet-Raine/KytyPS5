@@ -229,7 +229,7 @@ ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo& regs, const ShaderComputeInp
 // Returned SPIR-V spans are read-only views backed by the shader program cache.
 bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                         std::span<const uint32_t>& spirv);
+                         std::span<const uint32_t>& spirv, bool route_layer_from_instance = false);
 bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo& vs_info,
                          std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
@@ -238,7 +238,7 @@ bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegi
                          ShaderComputeInputInfo& input_info, std::span<const uint32_t>& spirv);
 bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                           ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                          std::vector<uint32_t>& spirv);
+                          std::vector<uint32_t>& spirv, bool route_layer_from_instance = false);
 bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
                           ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo& input_info,
                           std::vector<uint32_t>& spirv);

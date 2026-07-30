@@ -898,6 +898,7 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 
 	std::vector<uint32_t> spirv;
 	std::string           emit_error;
+	ir.route_layer_from_instance = options.route_layer_from_instance;
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram\n",
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
 	if (!Spirv::EmitProgram(ir, resources, options.vertex_input_info, options.pixel_input_info,

@@ -1067,7 +1067,7 @@ static std::span<const uint32_t> AddShaderProgramPermutation(const char* stage,
 
 bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& info,
-                         std::span<const uint32_t>& spirv) {
+                         std::span<const uint32_t>& spirv, bool route_layer_from_instance) {
 	spirv = {};
 
 	if (!ShaderGetStaticInputInfoVS(regs, sh, info)) {
@@ -1093,7 +1093,8 @@ bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegis
 	}
 
 	std::vector<uint32_t> compiled_spirv;
-	if (!ShaderCompileSpirvVS(regs, sh, lane_mask_mode, info, compiled_spirv)) {
+	if (!ShaderCompileSpirvVS(regs, sh, lane_mask_mode, info, compiled_spirv,
+	                          route_layer_from_instance)) {
 		return false;
 	}
 
@@ -1391,7 +1392,7 @@ static void DumpShaderRecompilerOriginal(const char* type, uint64_t shader_hash,
 
 bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                           ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                          std::vector<uint32_t>& spirv) {
+                          std::vector<uint32_t>& spirv, bool route_layer_from_instance) {
 	KYTY_PROFILER_FUNCTION(profiler::colors::Amber300);
 
 	EXIT_NOT_IMPLEMENTED(regs.es_regs.data_addr == 0 || regs.gs_regs.chksum == 0);
@@ -1413,6 +1414,7 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	options.dump_ir              = ShaderRecompilerTextDumpEnabled();
 	options.early_dump           = options.dump_ir;
 	options.dump_label           = "ShaderRecompiler VS";
+	options.route_layer_from_instance = route_layer_from_instance;
 
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;

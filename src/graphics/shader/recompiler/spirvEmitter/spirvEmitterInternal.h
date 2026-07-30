@@ -44,6 +44,7 @@ enum : uint32_t {
 	CapabilityGroupNonUniformBallot          = 64,
 	CapabilityGroupNonUniformShuffle         = 65,
 	CapabilityComputeDerivativeGroupQuadsKHR = 5288,
+	CapabilityShaderViewportIndexLayerEXT    = 5254,
 	StorageClassUniformConstant              = 0,
 	StorageClassInput                        = 1,
 	StorageClassOutput                       = 3,
@@ -71,6 +72,7 @@ enum : uint32_t {
 
 enum : uint32_t {
 	BuiltInPosition                  = 0,
+	BuiltInLayer                     = 9,
 	BuiltInFragCoord                 = 15,
 	BuiltInFrontFacing               = 17,
 	BuiltInSampleMask                = 20,
@@ -408,6 +410,10 @@ struct EmitterState {
 	uint32_t                               per_vertex_variable                           = 0;
 	uint32_t                               depth_variable                                = 0;
 	uint32_t                               sample_mask_variable                          = 0;
+	// WriteToSlice layer routing: when the program requests it, a vertex shader writes
+	// gl_Layer = gl_InstanceIndex so a layered instanced draw fans to volume slices.
+	uint32_t                               layer_variable                                = 0;
+	uint32_t                               layer_instance_index_variable                 = 0;
 	bool                                   needs_subgroup_ballot                         = false;
 	bool                                   needs_subgroup_shuffle                        = false;
 	bool                                   needs_subgroup_local_invocation_id            = false;

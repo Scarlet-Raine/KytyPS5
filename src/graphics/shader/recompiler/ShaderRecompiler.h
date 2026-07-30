@@ -25,6 +25,8 @@ struct CompileOptions {
 	uint32_t                      push_constant_offset = 0;
 	bool                          dump_ir              = true;
 	bool                          early_dump           = false;
+	// Emit gl_Layer = gl_InstanceIndex from a vertex shader (WriteToSlice volume rendering).
+	bool                          route_layer_from_instance = false;
 	const char*                   dump_label           = nullptr;
 	const uint32_t*               user_data            = nullptr;
 	IR::SrtMemoryReader           read_memory          = nullptr;
