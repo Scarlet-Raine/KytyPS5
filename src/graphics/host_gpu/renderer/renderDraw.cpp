@@ -1165,6 +1165,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
 	NoteDrawStage("EmitDrawPrimitives");
+	if (state.writetoslice.matched) {
+		LOGF_BOUNDED(64,
+		             "WriteToSlice draw: slices=%u color_count=%u ps_active=%d num_layers=%u"
+		             " color0_fmt=%d color0_addr=0x%010" PRIx64 " instances=%u\n",
+		             state.writetoslice.slice_count, state.color_count, state.ps_active ? 1 : 0,
+		             state.rendering.num_layers,
+		             state.color_count > 0 ? static_cast<int>(state.color_info[0].format) : -1,
+		             state.color_count > 0 ? state.color_info[0].base_addr : 0, draw.instance_count);
+	}
 	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
 
 	if (set_auto_debug) {
