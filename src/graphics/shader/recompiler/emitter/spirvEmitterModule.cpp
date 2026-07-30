@@ -224,6 +224,16 @@ void AllocateOutputVariables(EmitterState& state) {
 				break;
 		}
 	}
+	// WriteToSlice volume rendering: a vertex shader writes gl_Layer = gl_InstanceIndex so a
+	// layered instanced draw fans one fullscreen primitive across the volume's slices. Reserve
+	// the output layer variable and the instance-index input that drives it, and expose both in
+	// the entry-point interface (they are defined and written later in the module/body).
+	if (state.program.route_layer_from_instance && state.stage == ShaderType::Vertex) {
+		state.layer_variable = state.builder.AllocateId();
+		state.interface_variables.push_back(state.layer_variable);
+		state.layer_instance_index_variable = state.builder.AllocateId();
+		state.interface_variables.push_back(state.layer_instance_index_variable);
+	}
 }
 
 uint32_t BuiltInForInput(IR::StageInputKind kind) {
@@ -293,6 +303,14 @@ void AddOutputAnnotationsAndNames(EmitterState& state) {
 		state.builder.AddName(state.sample_mask_variable, "gl_SampleMask");
 		state.builder.AddAnnotation(
 		    {OpDecorate, state.sample_mask_variable, DecorationBuiltIn, BuiltInSampleMask});
+	}
+	if (state.layer_variable != 0) {
+		state.builder.AddName(state.layer_variable, "gl_Layer");
+		state.builder.AddAnnotation(
+		    {OpDecorate, state.layer_variable, DecorationBuiltIn, BuiltInLayer});
+		state.builder.AddName(state.layer_instance_index_variable, "gl_InstanceIndex");
+		state.builder.AddAnnotation({OpDecorate, state.layer_instance_index_variable,
+		                             DecorationBuiltIn, BuiltInInstanceIndex});
 	}
 	for (const auto& binding: state.outputs) {
 		if (binding.kind == IR::StageOutputKind::Parameter ||
@@ -504,6 +522,11 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		state.builder.AddCapability({CapabilityComputeDerivativeGroupQuadsKHR});
 		state.builder.AddExtension("SPV_KHR_compute_shader_derivatives");
 	}
+	if (state.layer_variable != 0) {
+		// Writing gl_Layer from a vertex shader requires this capability/extension.
+		state.builder.AddCapability({CapabilityShaderViewportIndexLayerEXT});
+		state.builder.AddExtension("SPV_EXT_shader_viewport_index_layer");
+	}
 	state.builder.AddExtInstImport(state.glsl_std450, "GLSL.std.450");
 	state.builder.AddMemoryModel({AddressingModelLogical, MemoryModelGLSL450});
 	state.builder.AddEntryPoint(ExecutionModelForStage(state.stage), state.main_func, "main",
@@ -651,6 +674,12 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	if (state.depth_variable != 0) {
 		state.builder.AddType(
 		    {OpVariable, state.ptr_output_float, state.depth_variable, StorageClassOutput});
+	}
+	if (state.layer_variable != 0) {
+		state.builder.AddType(
+		    {OpVariable, state.ptr_output_int, state.layer_variable, StorageClassOutput});
+		state.builder.AddType({OpVariable, state.ptr_input_int,
+		                       state.layer_instance_index_variable, StorageClassInput});
 	}
 	if (state.sample_mask_variable != 0) {
 		state.builder.AddType(

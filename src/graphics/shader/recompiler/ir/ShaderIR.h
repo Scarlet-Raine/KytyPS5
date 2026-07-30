@@ -803,6 +803,8 @@ struct Program {
 	bool                    shader_info_complete       = false;
 	BindingLayout           bindings;
 	bool                    binding_layout_complete = false;
+	// WriteToSlice volume rendering: emit gl_Layer = gl_InstanceIndex from this vertex shader.
+	bool                    route_layer_from_instance = false;
 };
 
 bool LowerProgram(const Decoder::Program& decoded, const CFG::Graph& cfg, ShaderType stage,
