@@ -381,6 +381,10 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 		}
 
 		if (!ok) {
+			if (error != nullptr) {
+				const uint32_t next = word_index + 1u < code.size() ? code[word_index + 1u] : 0u;
+				*error += fmt::format(" [raw@0x{:08x}=0x{:08x} next=0x{:08x}]", pc, word, next);
+			}
 			return false;
 		}
 
