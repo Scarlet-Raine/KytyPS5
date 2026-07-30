@@ -91,8 +91,21 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
 		     rt.attrib.num_samples, rt.attrib.num_fragments);
 	}
-	const auto view = ResolveTargetViewInfo(
+	auto view = ResolveTargetViewInfo(
 	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
+	// For a volume color target (WriteToSlice), CB_COLOR_VIEW.SLICE_MAX can exceed the real slice
+	// count by one relative to attrib3.depth. The authoritative slice count is depth+1; clamp the
+	// layered view/backing to it so the render-target backing matches the volume's mapped memory
+	// (each slice is one tiled 2D surface). Only applies to true volumes (depth != 0), leaving
+	// ordinary 2D-array targets untouched.
+	if (rt.attrib3.depth != 0 && view.type == TargetViewType::Image2DArray) {
+		const uint32_t volume_slices = rt.attrib3.depth + 1u;
+		if (volume_slices < view.image_layers) {
+			view.image_layers = volume_slices;
+			view.layer_count =
+			    view.base_layer < volume_slices ? volume_slices - view.base_layer : 1u;
+		}
+	}
 	// Diagnostic for the out-of-frame color-grading LUT generation hunt: a UE volume LUT is
 	// rendered into a 3D/layered target. Record any color target that is volume-dimensioned,
 	// has depth, or binds more than one array slice, so a bounded run reveals whether the
@@ -121,11 +134,11 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	switch (view.type) {
 		case TargetViewType::Image2D: break;
 		case TargetViewType::Image2DArray:
-			EXIT("layered render-target views are unsupported: base=%u count=%u addr=0x%010" PRIx64
-			     " %ux%u dim=%u depth=%u fmt=0x%08" PRIx32 " tile=0x%08" PRIx32 "\n",
-			     view.base_layer, view.layer_count, rt.base.addr, rt.attrib2.width + 1,
-			     rt.attrib2.height + 1, rt.attrib3.dimension, rt.attrib3.depth, rt.info.format,
-			     rt.attrib3.tile_mode);
+			// A layered/volume color target (e.g. a WriteToSlice volume LUT rendered with
+			// gl_Layer routing). The layered attachment path below builds a 2D-array view and
+			// the draw sets num_layers from view.layer_count. Previously this was dropped upstream
+			// in ShouldSkipGeShader, so reaching here means the WriteToSlice path enabled it.
+			break;
 		case TargetViewType::Unsupported:
 			EXIT("invalid render-target view: base=%u last=%u draw_offset=%u\n",
 			     rt.view.base_array_slice_index, rt.view.last_array_slice_index,

@@ -535,6 +535,7 @@ struct DrawRenderState {
 	RenderColorInfo           color_info[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	uint32_t                  color_count                              = 0;
 	bool                      ps_active                                = true;
+	WriteToSliceInfo          writetoslice                             = {};
 	RenderState               rendering;
 	ShaderVertexInputInfo     vs_input_info;
 	ShaderPixelInputInfo      ps_input_info;
@@ -854,7 +855,7 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	NoteDrawStage("ShaderCompileInfoVS");
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
-	                         state.vs_shader)) {
+	                         state.vs_shader, state.writetoslice.matched)) {
 		// A shader the recompiler cannot lower must not abort the whole emulator. Report it and let
 		// the caller skip the draw, matching how other unsupported draw state is handled.
 		LOGF("ShaderCompileInfoVS failed for draw %s; skipping draw\n", draw.name);
@@ -1219,7 +1220,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 		return;
 	}
 
-	if (ShouldSkipGeShader(buffer)) {
+	const auto writetoslice = ClassifyWriteToSliceGs(buffer);
+	if (!writetoslice.matched && ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
@@ -1304,6 +1306,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	index_source.type = index_type;
 
 	DrawRenderState state {};
+	state.writetoslice = writetoslice;
 	NoteDrawStage("PrepareDrawRenderState");
 	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, true, state)) {
 		ResetBindings();
@@ -1362,7 +1365,8 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer,
 		return;
 	}
 
-	if (ShouldSkipGeShader(buffer)) {
+	const auto writetoslice = ClassifyWriteToSliceGs(buffer);
+	if (!writetoslice.matched && ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
@@ -1396,6 +1400,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer,
 	                         instance_count,  first_instance};
 
 	DrawRenderState state {};
+	state.writetoslice = writetoslice;
 	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, false, state)) {
 		ResetBindings();
 		return;
