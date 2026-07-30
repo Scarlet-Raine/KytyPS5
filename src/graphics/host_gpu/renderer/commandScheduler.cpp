@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/memoryTracker.h"
 
 #include <algorithm>
 
@@ -236,6 +237,15 @@ void CommandScheduler::Wait(uint64_t tick) {
 
 void CommandScheduler::PopPendingOperations() {
 	m_master.Refresh();
+	// A stream-buffer wrap can drain here from inside a memory-tracker upload callback (e.g.
+	// ObtainBuffer -> UploadFromBacking -> staging Map -> Wait). A deferred op that touches the
+	// tracker (buffer retirement) would then re-enter the held, non-reentrant m_access_mutex and
+	// trip the upload-callback guard. The GPU fence has already been refreshed above, which is
+	// what actually reclaims stream-buffer space; leave the host callbacks queued and run them at
+	// the next drain once the callback has returned.
+	if (MemoryTracker::InUploadCallback()) {
+		return;
+	}
 	for (;;) {
 		Common::UniqueFunction<void> callback;
 		{
