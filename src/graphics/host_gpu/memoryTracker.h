@@ -96,6 +96,13 @@ public:
 	static void SetUnmapContentionHook(UnmapContentionHook hook) noexcept;
 #endif
 
+	// True while the current thread is executing an upload callback (inside
+	// ForEachUploadRange's upload_func), during which this tracker's m_access_mutex is held.
+	// Re-entering any tracker method that locks m_access_mutex would deadlock (the guard turns
+	// that into a fatal EXIT), so callers that might run host work here (e.g. the command
+	// scheduler draining deferred operations) must defer that work until the callback returns.
+	[[nodiscard]] static bool InUploadCallback() noexcept { return s_upload_owner != nullptr; }
+
 	template <typename RangeFunc, typename UploadFunc>
 	void ForEachUploadRange(uint64_t vaddr, uint64_t size, bool is_written, RangeFunc&& range_func,
 	                        UploadFunc&& upload_func) {

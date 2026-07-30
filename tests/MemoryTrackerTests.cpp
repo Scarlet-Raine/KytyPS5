@@ -347,6 +347,52 @@ void TestCleanReadFaultPreservesCpuState() {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
+// The command scheduler relies on MemoryTracker::InUploadCallback() to defer host deferred
+// operations that would otherwise re-enter the tracker's held m_access_mutex from inside an
+// upload callback (the "memory tracker re-entered from upload callback" crash). Verify the flag
+// is observable from within the callback, for both read and write uploads, and is restored after.
+void TestInUploadCallbackObservable() {
+  constexpr uintptr_t base = 0x0000000200010000ull;
+  PageManager page_manager(DummyFault, nullptr);
+  MemoryTracker tracker(page_manager);
+  const auto page_size = page_manager.GetPageSize();
+  auto *memory = static_cast<uint8_t *>(VirtualAlloc(
+      reinterpret_cast<void *>(base), page_size, MEM_RESERVE | MEM_COMMIT,
+      PAGE_READWRITE));
+  Check(memory == reinterpret_cast<void *>(base), "fixed VirtualAlloc failed");
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  page_manager.OnGpuMap(address, page_size);
+
+  Check(!MemoryTracker::InUploadCallback(),
+        "upload-callback flag set before any upload");
+  for (const bool is_written : {false, true}) {
+    // Dirty the range first so the range callback is actually invoked (it only fires for
+    // CPU-modified bytes); a freshly mapped page would otherwise skip it.
+    tracker.MarkRegionAsCpuModified(address, page_size);
+    bool range_called = false;
+    bool range_saw_flag = false;
+    bool upload_saw_flag = false;
+    tracker.ForEachUploadRange(
+        address, page_size, is_written,
+        [&](uint64_t, uint64_t) noexcept {
+          range_called = true;
+          range_saw_flag = MemoryTracker::InUploadCallback();
+        },
+        [&]() noexcept { upload_saw_flag = MemoryTracker::InUploadCallback(); });
+    Check(range_called && range_saw_flag,
+          "upload-callback flag not set during range scan");
+    Check(upload_saw_flag, "upload-callback flag not set during upload callback");
+    Check(!MemoryTracker::InUploadCallback(),
+          "upload-callback flag not restored after upload");
+  }
+
+  // The final write upload left the range GPU-dirty; clear it before untracking.
+  tracker.UnmarkRegionAsGpuModified(address, page_size);
+  tracker.UntrackMemory(address, page_size);
+  page_manager.OnGpuUnmap(address, page_size);
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+}
+
 void TestGpuDownloadFaultOwnership() {
   constexpr uintptr_t base = 0x0000000200010000ull;
   DownloadTrackerHarness harness;
@@ -1018,6 +1064,7 @@ int main(int argc, char **argv) {
   TestCpuDirtyUploadAndFault();
   TestPendingFaultBlocksUploadConsumption();
   TestCleanReadFaultPreservesCpuState();
+  TestInUploadCallbackObservable();
   TestGpuDownloadFaultOwnership();
   TestVirtualGpuWriteDiscard();
   TestSameSlabTrackerArbitration();
