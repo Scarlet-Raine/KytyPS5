@@ -170,8 +170,22 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	}
 
 	if (!ShaderAddressValid(sh_ctx.GetCs().cs_regs.data_addr)) {
+		// A silently-dropped dispatch leaves no storage-bind trace. If the color-grading LUT
+		// generation compute is dropped here, that alone explains the never-written LUT.
+		LOGF_BOUNDED(128,
+		             "DispatchDirect: SKIPPED dispatch, invalid CS shader addr=0x%016" PRIx64
+		             " groups=%ux%ux%u mode=0x%08" PRIx32 "\n",
+		             sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y,
+		             thread_group_z, mode);
 		return;
 	}
+
+	// Census: record every dispatch that reaches execution (bounded), so the total dispatch
+	// count and shader addresses can be correlated against the missing LUT producer.
+	LOGF_BOUNDED(256, "DispatchDirect: census shader=0x%016" PRIx64 " groups=%ux%ux%u mode=0x%08" PRIx32
+	             "\n",
+	             sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y, thread_group_z,
+	             mode);
 
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
 	constexpr uint32_t DISPATCH_INITIATOR_BASE_BITS             = 0x41u;
@@ -215,11 +229,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	const auto& program   = *input_info.stage.program;
 	const auto& resources = *input_info.stage.resources;
 	if (TryConsumeComputeMetaClear(input_info, buffer)) {
+		LOGF_BOUNDED(64, "DispatchDirect: CONSUMED as meta-clear shader=0x%016" PRIx64 "\n",
+		             sh_ctx.GetCs().cs_regs.data_addr);
 		ResetBindings();
 		return;
 	}
 	if (TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 	                                thread_group_z, mode)) {
+		LOGF_BOUNDED(64, "DispatchDirect: CONSUMED as image-clear shader=0x%016" PRIx64 "\n",
+		             sh_ctx.GetCs().cs_regs.data_addr);
 		ResetBindings();
 		return;
 	}
@@ -229,6 +247,28 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 		           image.kind == ShaderRecompiler::IR::ResourceKind::ImageUint;
 	    });
 	const bool                   has_sampler = !program.info.samplers.empty();
+	// Targeted, uncapped detector for the color-grading LUT producer. Any WRITTEN storage image
+	// whose extent is 32x32x32 (3D volume or 32-layer array) is the CombineLUTs output we have
+	// been unable to locate; log it regardless of dispatch count so a late menu-time generation
+	// is not lost to the bounded census above. Shape-based (not format-based) to stay robust.
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+		const auto& image   = program.info.images[i];
+		const bool  storage = image.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
+		                      image.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+		if (!image.written && !storage) {
+			continue;
+		}
+		const auto     r = DecodeNativeDescriptor<ShaderTextureResource>(resources.images[i]);
+		const uint32_t w = static_cast<uint32_t>(r.Width5()) + 1u;
+		const uint32_t h = static_cast<uint32_t>(r.Height5()) + 1u;
+		const uint32_t d = static_cast<uint32_t>(r.Depth()) + 1u;
+		if (w == 32u && h == 32u && d == 32u) {
+			LOGF("DispatchDirect: LUT-SHAPED STORAGE WRITE shader=0x%016" PRIx64
+			     " target=0x%010" PRIx64 " type=%u fmt=%u %ux%ux%u tile=%u written=%d storage=%d\n",
+			     sh_ctx.GetCs().cs_regs.data_addr, r.Base40(), static_cast<uint32_t>(r.Type()),
+			     r.Format(), w, h, d, r.TileMode(), image.written ? 1 : 0, storage ? 1 : 0);
+		}
+	}
 	static std::atomic<uint32_t> dispatch_log_count {0};
 	if ((large_workgroup || has_sampler) &&
 	    dispatch_log_count.fetch_add(1, std::memory_order_relaxed) < 512) {

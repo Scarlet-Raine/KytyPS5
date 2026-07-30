@@ -456,15 +456,24 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 
 	if (unsupported_stage_mask || unsupported_gs_stage || ge_group_size || ge_shader_regs) {
 		const auto log_id = g_shader_stage_log_count.fetch_add(1);
-		if (log_id < 32) {
+		if (log_id < 64) {
+			// Also report the bound color target: if a dropped geometry-shader draw targets the
+			// color-grading LUT's volume, this skip is the missing CombineLUTs producer.
+			const auto  rt_slot = render_target_first_bound_slot(buffer);
+			const auto& rt      = ctx.GetRenderTarget(rt_slot);
 			LOGF("Skipping unsupported GE shader draw: stages=0x%08" PRIx32
 			     " prim_group=0x%04" PRIx16 " vert_group=0x%04" PRIx16 " ngg=0x%08" PRIx32
 			     " max_out=0x%08" PRIx32 " gs_max_vert=0x%08" PRIx32 " gs_out_prim=0x%08" PRIx32
-			     " es=0x%016" PRIx64 " gs=0x%016" PRIx64 "\n",
+			     " es=0x%016" PRIx64 " gs=0x%016" PRIx64 " RT_addr=0x%010" PRIx64
+			     " RT=%ux%u dim=%u depth=%u slices=[%u..%u] fmt=0x%08" PRIx32 " tile=0x%08" PRIx32
+			     "\n",
 			     stages, ge_cntl.primitive_group_size, ge_cntl.vertex_group_size,
 			     sh_regs.m_geNggSubgrpCntl, sh_regs.m_geMaxOutputPerSubgroup,
 			     sh_regs.m_vgtGsMaxVertOut, sh_regs.m_vgtGsOutPrimType,
-			     vertex_info.es_regs.data_addr, vertex_info.gs_regs.data_addr);
+			     vertex_info.es_regs.data_addr, vertex_info.gs_regs.data_addr, rt.base.addr,
+			     rt.attrib2.width + 1, rt.attrib2.height + 1, rt.attrib3.dimension,
+			     rt.attrib3.depth, rt.view.base_array_slice_index, rt.view.last_array_slice_index,
+			     rt.info.format, rt.attrib3.tile_mode);
 		}
 		return true;
 	}

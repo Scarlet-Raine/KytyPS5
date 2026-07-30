@@ -109,6 +109,15 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		             rt.view.last_array_slice_index, render_target_slice_offset,
 		             rt.attrib2.num_mip_levels + 1u, rt.info.format, rt.attrib3.tile_mode);
 	}
+	// Uncapped detector (closes the 128-cap gap in the decision log below): a color-grading LUT
+	// rendered slice-by-slice would bind a 32x32 2D color target. Log every one regardless of
+	// draw count so a late menu-time generation is not missed.
+	if (rt.attrib2.width + 1 == 32 && rt.attrib2.height + 1 == 32) {
+		LOGF("RenderColorTarget: 32x32 COLOR TARGET addr=0x%010" PRIx64 " dim=%u depth=%u"
+		     " slices=[%u..%u] fmt=0x%08" PRIx32 " tile=0x%08" PRIx32 "\n",
+		     rt.base.addr, rt.attrib3.dimension, rt.attrib3.depth, rt.view.base_array_slice_index,
+		     rt.view.last_array_slice_index, rt.info.format, rt.attrib3.tile_mode);
+	}
 	switch (view.type) {
 		case TargetViewType::Image2D: break;
 		case TargetViewType::Image2DArray:

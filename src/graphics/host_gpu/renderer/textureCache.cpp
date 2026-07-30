@@ -1086,6 +1086,29 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 		             desc.info.extent.height, desc.info.extent.depth,
 		             static_cast<uint32_t>(desc.info.pixel_format), desc.info.tile_mode,
 		             static_cast<uint32_t>(desc.type), cpu_dirty ? 1 : 0, gpu_dirty ? 1 : 0);
+		// Alias/coherency probe (motivated by shadPS4 #4708/#4773): a producer that writes this
+		// LUT's guest range through a DIFFERENTLY-SHAPED host image (e.g. a 2D-array or 2D
+		// storage/color target rather than a 3D volume) would leave its GPU write invisible to
+		// this sampled 3D view. A volume-only capture scan and the CPU/GPU-dirty bits both miss
+		// that. Enumerate every cached image overlapping the range and report its shape and
+		// GPU-modified/CPU-dirty state, so a hidden aliased writer is caught at the sampling bind.
+		const auto overlaps =
+		    FindImagesInRegion(desc.info.data.address, desc.info.data.size, /*page_overlap=*/true);
+		LOGF_BOUNDED(32, "TextureCache: volume overlap probe addr=0x%010" PRIx64 " candidates=%zu\n",
+		             desc.info.data.address, overlaps.size());
+		for (const auto overlap_id: overlaps) {
+			const auto& other = ResolveImage(overlap_id);
+			LOGF_BOUNDED(64,
+			             "  overlap addr=0x%010" PRIx64 " size=0x%08" PRIx64 " %ux%ux%u type=%u"
+			             " fmt=%u tile=%u gpu_mod=%d buf_mod=%d cpu_dirty=%d exact=%d\n",
+			             other.info.data.address, other.info.data.size, other.info.extent.width,
+			             other.info.extent.height, other.info.extent.depth,
+			             static_cast<uint32_t>(other.info.type),
+			             static_cast<uint32_t>(other.info.pixel_format), other.info.tile_mode,
+			             other.IsGpuModified() ? 1 : 0, other.IsBufferModified() ? 1 : 0,
+			             other.IsCpuDirty() ? 1 : 0,
+			             other.info.data.address == desc.info.data.address ? 1 : 0);
+		}
 		// Layout debugging aid: dump the raw guest bytes of volume lookups so the address
 		// mapping can be verified offline against known-smooth content. Dump the first few of
 		// any volume, and always capture 32x32x32 LUTs (the tonemap grading LUT) regardless of
