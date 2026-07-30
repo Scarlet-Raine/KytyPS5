@@ -42,6 +42,21 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	r.export_mapping = {};
 
 	if (rt.base.addr == 0 || mask == 0) {
+		// A bound-but-masked color target (addr set, write mask 0) is silently dropped as a
+		// no-op draw. If the color-grading LUT generation binds its volume target with a mask
+		// the emulator reads as zero, the generating draw vanishes here before any other
+		// diagnostic. Record such dropped targets (bounded), highlighting volume/3D ones.
+		if (rt.base.addr != 0) {
+			LOGF_BOUNDED(128,
+			             "RenderColorTarget: DROPPED bound target slot=%" PRIu32
+			             " addr=0x%010" PRIx64 " %ux%u dim=%u depth=%u slices=[%u..%u]"
+			             " target_mask=0x%08" PRIx32 " fmt=0x%08" PRIx32 " tile=0x%08" PRIx32
+			             " ignore_mask=%d\n",
+			             rt_slot, rt.base.addr, rt.attrib2.width + 1, rt.attrib2.height + 1,
+			             rt.attrib3.dimension, rt.attrib3.depth, rt.view.base_array_slice_index,
+			             rt.view.last_array_slice_index, hw.GetRenderTargetMask(), rt.info.format,
+			             rt.attrib3.tile_mode, ignore_target_mask ? 1 : 0);
+		}
 		if (graphics_debug_dump_enabled()) {
 			static std::atomic_uint log_count = 0;
 			const auto              log_id    = log_count.fetch_add(1, std::memory_order_relaxed);
@@ -78,11 +93,30 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	}
 	const auto view = ResolveTargetViewInfo(
 	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
+	// Diagnostic for the out-of-frame color-grading LUT generation hunt: a UE volume LUT is
+	// rendered into a 3D/layered target. Record any color target that is volume-dimensioned,
+	// has depth, or binds more than one array slice, so a bounded run reveals whether the
+	// CombineLUTs volume render reaches this path (and dies on the Image2DArray EXIT below) or
+	// never arrives here at all.
+	if (rt.attrib3.dimension != 1 || rt.attrib3.depth != 0 ||
+	    rt.view.base_array_slice_index != rt.view.last_array_slice_index) {
+		LOGF_BOUNDED(128,
+		             "RenderColorTarget: volume/layered target addr=0x%010" PRIx64 " %ux%u"
+		             " dim=%u depth=%u slices=[%u..%u] draw_off=%u mips=%u fmt=0x%08" PRIx32
+		             " tile=0x%08" PRIx32 "\n",
+		             rt.base.addr, rt.attrib2.width + 1, rt.attrib2.height + 1, rt.attrib3.dimension,
+		             rt.attrib3.depth, rt.view.base_array_slice_index,
+		             rt.view.last_array_slice_index, render_target_slice_offset,
+		             rt.attrib2.num_mip_levels + 1u, rt.info.format, rt.attrib3.tile_mode);
+	}
 	switch (view.type) {
 		case TargetViewType::Image2D: break;
 		case TargetViewType::Image2DArray:
-			EXIT("layered render-target views are unsupported: base=%u count=%u\n", view.base_layer,
-			     view.layer_count);
+			EXIT("layered render-target views are unsupported: base=%u count=%u addr=0x%010" PRIx64
+			     " %ux%u dim=%u depth=%u fmt=0x%08" PRIx32 " tile=0x%08" PRIx32 "\n",
+			     view.base_layer, view.layer_count, rt.base.addr, rt.attrib2.width + 1,
+			     rt.attrib2.height + 1, rt.attrib3.dimension, rt.attrib3.depth, rt.info.format,
+			     rt.attrib3.tile_mode);
 		case TargetViewType::Unsupported:
 			EXIT("invalid render-target view: base=%u last=%u draw_offset=%u\n",
 			     rt.view.base_array_slice_index, rt.view.last_array_slice_index,
@@ -276,6 +310,16 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	desc.view_info.layer_count = view.layer_count;
 	desc.view_info.usage       = vk::ImageUsageFlagBits::eColorAttachment;
 	auto& texture_cache = m_context.GetTextureCache();
+	// Sliced color targets realize one layer of a larger surface (for example a volume
+	// LUT rendered slice-by-slice). These binds are rare; keep a bounded record so the
+	// producing writes can be correlated with a later volume sampled view of the range.
+	if (view.base_layer > 0 || view.image_layers > 1) {
+		LOGF_BOUNDED(64,
+		             "RenderColorTarget: sliced bind addr=0x%010" PRIx64 " %ux%u layer=%u/%u"
+		             " size=0x%016" PRIx64 " tile=%u\n",
+		             rt.base.addr, width, height, view.base_layer, view.image_layers, backing_size,
+		             rt.attrib3.tile_mode);
+	}
 	r.desc              = std::move(desc);
 	r.image_id          = texture_cache.FindImage(r.desc, exact_format);
 	r.type              = RenderColorType::RenderTexture;

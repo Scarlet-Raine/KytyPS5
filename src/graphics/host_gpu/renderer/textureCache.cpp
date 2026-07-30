@@ -18,13 +18,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
 #include <set>
 #include <tuple>
+#include <vector>
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace Libs::Graphics {
@@ -614,6 +618,24 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		if (requested.BlockExtent() != cached.info.BlockExtent() ||
 		    requested_block != cached_block) {
 			if (safe_to_delete) {
+				// Dropping a GPU-modified image here loses content that was never written
+				// back to guest memory; a later reader is then re-initialized from stale
+				// bytes. Keep a bounded record of every such drop.
+				if (cached.IsGpuModified()) {
+					LOGF_BOUNDED(64,
+					             "TextureCache: equal-address block mismatch drops GPU-only "
+					             "image: addr=0x%010" PRIx64 " req=%ux%ux%u blk=%ux%u/%u "
+					             "cached=%ux%ux%u blk=%ux%u/%u type=%u/%u tile=%u/%u\n",
+					             requested.data.address, requested.extent.width,
+					             requested.extent.height, requested.extent.depth,
+					             requested.BlockExtent().width, requested.BlockExtent().height,
+					             requested_block, cached.info.extent.width,
+					             cached.info.extent.height, cached.info.extent.depth,
+					             cached.info.BlockExtent().width, cached.info.BlockExtent().height,
+					             cached_block, static_cast<uint32_t>(requested.type),
+					             static_cast<uint32_t>(cached.info.type), requested.tile_mode,
+					             cached.info.tile_mode);
+				}
 				DeleteImages(std::array {cached_id}, cached_id);
 			}
 			return {merged_id};
@@ -627,6 +649,14 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		if (requested.data.size == cached.info.data.size &&
 		    (requested.IsVolume() || cached.info.IsVolume())) {
+			LOGF_BOUNDED(32,
+			             "TextureCache: volume alias expand addr=0x%010" PRIx64
+			             " req=%ux%ux%u type=%u cached=%ux%ux%u layers=%u type=%u gpu_mod=%d\n",
+			             requested.data.address, requested.extent.width, requested.extent.height,
+			             requested.extent.depth, static_cast<uint32_t>(requested.type),
+			             cached.info.extent.width, cached.info.extent.height,
+			             cached.info.extent.depth, cached.info.resources.layers,
+			             static_cast<uint32_t>(cached.info.type), cached.IsGpuModified() ? 1 : 0);
 			return {ExpandImage(requested, cached_id)};
 		}
 		if (requested.pixel_format != cached.info.pixel_format ||
@@ -643,6 +673,14 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		if (requested.tile_mode != cached.info.tile_mode) {
 			if (safe_to_delete) {
+				if (cached.IsGpuModified()) {
+					LOGF_BOUNDED(64,
+					             "TextureCache: equal-address tile mismatch drops GPU-only "
+					             "image: addr=0x%010" PRIx64 " tile=%u/%u type=%u/%u\n",
+					             requested.data.address, requested.tile_mode, cached.info.tile_mode,
+					             static_cast<uint32_t>(requested.type),
+					             static_cast<uint32_t>(cached.info.type));
+				}
 				DeleteImages(std::array {cached_id}, cached_id);
 			}
 			return {merged_id};
@@ -1030,6 +1068,54 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 	ImageId result {};
 	bool    replacement_buffer = false;
 	bool    replacing_image    = false;
+	// Volume sampled/storage views are rare and alias GPU-rendered content (for example a
+	// color-grading LUT rendered slice-by-slice as a 2D target). Keep a bounded lifecycle
+	// record so a wrong alias decision can be traced from a normal run.
+	if (desc.info.IsVolume()) {
+		// Report whether the LUT's guest memory was ever written (CPU-dirty) or is GPU-owned,
+		// vs. stale-at-map. This distinguishes "guest wrote it (wrong upload/static asset)" from
+		// "nothing ever wrote it" — the key question for the missing color-grading LUT producer.
+		const bool cpu_dirty =
+		    m_memory_tracker.IsRegionCpuModified(desc.info.data.address, desc.info.data.size);
+		const bool gpu_dirty =
+		    m_buffer_cache.HasGpuDirtyBytes(desc.info.data.address, desc.info.data.size);
+		LOGF_BOUNDED(32,
+		             "TextureCache: volume lookup addr=0x%010" PRIx64 " size=0x%08" PRIx64
+		             " %ux%ux%u fmt=%u tile=%u binding=%u cpu_dirty=%d gpu_dirty=%d\n",
+		             desc.info.data.address, desc.info.data.size, desc.info.extent.width,
+		             desc.info.extent.height, desc.info.extent.depth,
+		             static_cast<uint32_t>(desc.info.pixel_format), desc.info.tile_mode,
+		             static_cast<uint32_t>(desc.type), cpu_dirty ? 1 : 0, gpu_dirty ? 1 : 0);
+		// Layout debugging aid: dump the raw guest bytes of volume lookups so the address
+		// mapping can be verified offline against known-smooth content. Dump the first few of
+		// any volume, and always capture 32x32x32 LUTs (the tonemap grading LUT) regardless of
+		// lookup order. The filename includes the address, so repeated lookups of the same LUT
+		// overwrite one file rather than exhausting the budget.
+		if (const char* dump_dir = std::getenv("KYTY_DUMP_VOLUME_DIR"); dump_dir != nullptr) {
+			static std::atomic<uint32_t> dump_count {0};
+			const bool is_grading_lut = desc.info.extent.width == 32 &&
+			                            desc.info.extent.height == 32 &&
+			                            desc.info.extent.depth == 32;
+			const auto index = dump_count.fetch_add(1);
+			if ((index < 16 || is_grading_lut) && desc.info.data.size <= 8u * 1024 * 1024) {
+				std::vector<uint8_t> bytes(desc.info.data.size);
+				if (Libs::LibKernel::Memory::TryReadBacking(desc.info.data.address, bytes.data(),
+				                                            bytes.size())) {
+					char path[512];
+					std::snprintf(
+					    path, sizeof(path),
+					    "%s/volume-0x%010" PRIx64 "-%ux%ux%u-fmt%u-tile%u-bind%u.bin", dump_dir,
+					    desc.info.data.address, desc.info.extent.width, desc.info.extent.height,
+					    desc.info.extent.depth, static_cast<uint32_t>(desc.info.pixel_format),
+					    desc.info.tile_mode, static_cast<uint32_t>(desc.type));
+					if (FILE* file = std::fopen(path, "wb"); file != nullptr) {
+						std::fwrite(bytes.data(), 1, bytes.size(), file);
+						std::fclose(file);
+					}
+				}
+			}
+		}
+	}
 	{
 		std::lock_guard            transaction(m_resource_mutex);
 		CacheLock                  lock(*this, m_lock);
@@ -1109,6 +1195,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				}
 			}
 			result         = InsertImage(desc.info);
+			if (desc.info.IsVolume()) {
+				LOGF_BOUNDED(32,
+				             "TextureCache: volume insert addr=0x%010" PRIx64 " size=0x%08" PRIx64
+				             " buffer_mod=%d replacing=%d\n",
+				             desc.info.data.address, desc.info.data.size,
+				             replacement_buffer ? 1 : 0, replacing_image ? 1 : 0);
+			}
 			auto& inserted = ResolveImage(result);
 			if (replacement_buffer || m_buffer_cache.HasGpuDirtyBytes(inserted.info.data.address,
 			                                                          inserted.info.data.size)) {
