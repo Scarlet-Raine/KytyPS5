@@ -422,6 +422,54 @@ static bool PixelShaderHasDepthOrCoverageSideEffects(const HW::ShaderRegisters& 
 	       db.shader_execute_on_noop;
 }
 
+// A UE "WriteToSlice" volume render: a passthrough geometry shader that fans a fullscreen
+// primitive to every slice of a 3D/layered color target via SV_RenderTargetArrayIndex. This is
+// how the color-grading LUT and volumetric-fog volumes are produced. The emulator has no general
+// geometry-shader stage, but this fixed pattern can be emulated by routing the layer index from
+// a per-slice instanced draw (see gs-writetoslice-volume-render-design.md). Recognizing it here
+// lets the draw path handle it instead of dropping it in ShouldSkipGeShader.
+struct WriteToSliceInfo {
+	bool     matched     = false;
+	uint32_t slice_count = 0;
+	uint32_t rt_slot     = 0;
+};
+
+static WriteToSliceInfo ClassifyWriteToSliceGs(const RenderCommandBuffer& buffer) {
+	const auto& ctx         = buffer.GetRegisters();
+	const auto& sh_ctx      = buffer.GetShaders();
+	const auto& sh_regs     = ctx.GetShaderRegisters();
+	const auto& vertex_info = sh_ctx.GetVs();
+
+	// Must be an ES+GS pipeline with a passthrough-triangle geometry shader (one triangle in,
+	// one triangle out: gs_max_vert == 3, triangle output). Amplification beyond a passthrough
+	// fan-to-slices is not covered by this pattern.
+	if (!ShaderAddressValid(vertex_info.es_regs.data_addr) ||
+	    !ShaderAddressValid(vertex_info.gs_regs.data_addr)) {
+		return {};
+	}
+	if (sh_regs.m_vgtGsMaxVertOut != 0x00000003 ||
+	    static_cast<Prospero::GsOutputPrimitiveType>(sh_regs.m_vgtGsOutPrimType) !=
+	        Prospero::GsOutputPrimitiveType::kTriangles) {
+		return {};
+	}
+
+	// The bound color target must be a volume / layered surface (3D dimension, or non-zero depth,
+	// or a multi-slice array view). Its slice count is the layer fan-out.
+	const auto  rt_slot = render_target_first_bound_slot(buffer);
+	const auto& rt      = ctx.GetRenderTarget(rt_slot);
+	const bool  layered = rt.attrib3.dimension != 1 || rt.attrib3.depth != 0 ||
+	                     rt.view.base_array_slice_index != rt.view.last_array_slice_index;
+	if (!layered) {
+		return {};
+	}
+	const uint32_t slice_count = rt.attrib3.depth + 1u;
+	if (slice_count <= 1u) {
+		return {};
+	}
+
+	return {true, slice_count, rt_slot};
+}
+
 static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 	const auto& ctx         = buffer.GetRegisters();
 	const auto& ucfg        = buffer.GetUserConfig();
@@ -466,19 +514,20 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 			// color-grading LUT's volume, this skip is the missing CombineLUTs producer.
 			const auto  rt_slot = render_target_first_bound_slot(buffer);
 			const auto& rt      = ctx.GetRenderTarget(rt_slot);
+			const auto  wts     = ClassifyWriteToSliceGs(buffer);
 			LOGF("Skipping unsupported GE shader draw: stages=0x%08" PRIx32
 			     " prim_group=0x%04" PRIx16 " vert_group=0x%04" PRIx16 " ngg=0x%08" PRIx32
 			     " max_out=0x%08" PRIx32 " gs_max_vert=0x%08" PRIx32 " gs_out_prim=0x%08" PRIx32
 			     " es=0x%016" PRIx64 " gs=0x%016" PRIx64 " RT_addr=0x%010" PRIx64
 			     " RT=%ux%u dim=%u depth=%u slices=[%u..%u] fmt=0x%08" PRIx32 " tile=0x%08" PRIx32
-			     "\n",
+			     " writetoslice=%d slice_count=%u\n",
 			     stages, ge_cntl.primitive_group_size, ge_cntl.vertex_group_size,
 			     sh_regs.m_geNggSubgrpCntl, sh_regs.m_geMaxOutputPerSubgroup,
 			     sh_regs.m_vgtGsMaxVertOut, sh_regs.m_vgtGsOutPrimType,
 			     vertex_info.es_regs.data_addr, vertex_info.gs_regs.data_addr, rt.base.addr,
 			     rt.attrib2.width + 1, rt.attrib2.height + 1, rt.attrib3.dimension,
 			     rt.attrib3.depth, rt.view.base_array_slice_index, rt.view.last_array_slice_index,
-			     rt.info.format, rt.attrib3.tile_mode);
+			     rt.info.format, rt.attrib3.tile_mode, wts.matched ? 1 : 0, wts.slice_count);
 		}
 		return true;
 	}
