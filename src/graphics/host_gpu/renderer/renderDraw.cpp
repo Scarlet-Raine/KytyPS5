@@ -23,6 +23,7 @@
 #include "graphics/host_gpu/renderer/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/shaderSubgroup.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/renderDoc.h"
 #include "graphics/shader/recompiler/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ShaderIR.h"
 #include "graphics/shader/shader.h"
@@ -35,6 +36,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -1183,6 +1185,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		             state.color_count > 0 ? static_cast<int>(state.color_info[0].format) : -1,
 		             state.color_count > 0 ? state.color_info[0].base_addr : 0,
 		             writetoslice_draw.instance_count);
+		// Diagnostic capture hook: the colour-grading LUT is only produced in occasional
+		// frames, so capturing an arbitrary frame usually misses it entirely. When
+		// KYTY_RD_CAPTURE_LUT is set, ask RenderDoc for a capture as soon as a 32-slice
+		// WriteToSlice volume (the grading LUT) is drawn, which also keeps the capture to a
+		// single frame instead of a multi-hundred-megabyte one.
+		if (state.writetoslice.slice_count == 32u) {
+			static const bool capture_lut = std::getenv("KYTY_RD_CAPTURE_LUT") != nullptr;
+			if (capture_lut) {
+				static std::atomic<uint32_t> requests {0};
+				if (requests.fetch_add(1, std::memory_order_relaxed) < 4) {
+					RenderDocRequestCapture();
+				}
+			}
+		}
 	}
 	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, writetoslice_draw, emit);
 
