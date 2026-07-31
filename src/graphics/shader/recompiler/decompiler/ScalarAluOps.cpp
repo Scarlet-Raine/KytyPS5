@@ -77,6 +77,7 @@ constexpr OpcodeMap SOPP_OPS[] = {
     {0x07u, Opcode::SCbranchVccnz}, {0x08u, Opcode::SCbranchExecz}, {0x09u, Opcode::SCbranchExecnz},
     {0x0au, Opcode::SBarrier},      {0x0cu, Opcode::SWaitcnt},      {0x0eu, Opcode::SSleep},
     {0x10u, Opcode::SSendmsg},      {0x16u, Opcode::STtraceData},   {0x20u, Opcode::SInstPrefetch},
+    {0x1fu, Opcode::SCodeEnd},
 };
 
 Opcode Lookup(const OpcodeMap* ops, uint32_t count, uint32_t opcode) {

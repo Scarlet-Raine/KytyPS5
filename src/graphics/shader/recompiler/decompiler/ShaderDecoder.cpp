@@ -404,7 +404,7 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 				// land exactly on the failing pc. A gap/overlap means an earlier length was wrong
 				// (misalignment) rather than a genuinely unknown instruction here.
 				const size_t count = program.instructions.size();
-				const size_t start = count > 10 ? count - 10 : 0;
+				const size_t start = count > 12 ? count - 12 : 0;
 				std::string  tail;
 				for (size_t i = start; i < count; i++) {
 					const auto& prev = program.instructions[i];
@@ -421,6 +421,12 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 
 		if (IsControlFlowBranch(inst.opcode)) {
 			branch_targets.insert(inst.branch_target);
+		}
+		// S_CODE_END marks the end of the shader code (it pads the last instruction-cache line);
+		// nothing executable follows it, so stop unconditionally. Without this the decoder walks
+		// through the S_CODE_END padding into trailing data and misdecodes it as instructions.
+		if (inst.opcode == Opcode::SCodeEnd) {
+			return true;
 		}
 		if (inst.opcode == Opcode::SEndpgm &&
 		    (word_index >= code.size() || !branch_targets.contains(word_index * 4u))) {
@@ -953,6 +959,7 @@ std::string OpcodeToString(Opcode opcode) {
 		case Opcode::STtraceData: return "s_ttracedata";
 		case Opcode::SInstPrefetch: return "s_inst_prefetch";
 		case Opcode::SEndpgm: return "s_endpgm";
+		case Opcode::SCodeEnd: return "s_code_end";
 		case Opcode::Exp: return "exp";
 		case Opcode::Unsupported: return "unsupported";
 		default: return "unknown";
