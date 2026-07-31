@@ -1186,7 +1186,7 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 			if (next_pc <= end_pc) {
 				labels.insert(next_pc);
 			}
-		} else if (inst.opcode == Opcode::SEndpgm) {
+		} else if (inst.opcode == Opcode::SEndpgm || inst.opcode == Opcode::SCodeEnd) {
 			labels.insert(next_pc);
 		}
 	}
@@ -1236,7 +1236,7 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 
 		const auto& last    = program.instructions[block.inst_end - 1u];
 		const auto  next_pc = InstructionEndPc(last);
-		if (last.opcode == Opcode::SEndpgm) {
+		if (last.opcode == Opcode::SEndpgm || last.opcode == Opcode::SCodeEnd) {
 			block.terminator.kind       = TerminatorKind::Branch;
 			block.terminator.condition  = BranchCondition::Always;
 			block.terminator.true_block = pc_to_block.at(end_pc);
