@@ -114,6 +114,25 @@ void EmitExport(EmitterState& state, const IR::Instruction& inst) {
 		return;
 	}
 
+	if (inst.export_info.kind == IR::ExportTargetKind::Position && !inst.export_info.compr) {
+		// Store only the components enabled by `en`; disabled lanes must keep their prior value.
+		// A shader may build POS0 with several partial EXP instructions (e.g. one writing x,y and
+		// a later one writing z,w). Storing a full vec4 would reset the disabled lanes to defaults
+		// (0, or 1 for w) and clobber the earlier writes, collapsing geometry to values such as
+		// (x, 0, 0, 1). Per-component stores into gl_Position preserve the other lanes.
+		for (uint32_t component = 0; component < 4u; component++) {
+			if (((inst.export_info.en >> component) & 1u) == 0) {
+				continue;
+			}
+			const auto scalar  = EmitExportComponentF32(state, inst, component);
+			const auto pointer = state.builder.AllocateId();
+			state.builder.AddFunction({OpAccessChain, state.ptr_output_float, pointer, variable,
+			                            ConstantU32(state, 0), ConstantU32(state, component)});
+			state.builder.AddFunction({OpStore, pointer, scalar});
+		}
+		return;
+	}
+
 	const auto value = ApplyMrtExportMapping(state, inst, EmitExportVec4F32(state, inst));
 	if (inst.export_info.kind == IR::ExportTargetKind::Position) {
 		const auto pointer = state.builder.AllocateId();
