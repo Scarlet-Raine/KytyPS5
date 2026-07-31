@@ -1169,22 +1169,36 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	NoteDrawStage("EmitDrawPrimitives");
 	DrawCallInfo writetoslice_draw = draw;
 	if (state.writetoslice.matched) {
-		// On hardware the geometry shader fans one input primitive to every slice via
-		// SV_RenderTargetArrayIndex, so the guest submits a single instance. We render the ES stage
-		// as a plain vertex shader that writes gl_Layer = gl_InstanceIndex, so the slice fan-out has
-		// to come from instancing: issue one instance per slice. Without this only layer 0 of the
-		// volume is written and the remaining slices keep stale/undefined contents.
-		if (writetoslice_draw.instance_count <= 1u && state.writetoslice.slice_count > 1u) {
-			writetoslice_draw.instance_count = state.writetoslice.slice_count;
-		}
+		// NOTE: an earlier revision expanded instance_count to the slice count here, on the
+		// assumption that the slice fan-out could be driven by instancing. Measurement
+		// falsified that: the guest submits ~32 SEPARATE draws per volume (one per slice),
+		// each with guest_instances=1 and a single quad (index_count=4), and none of the
+		// per-draw slice selectors are used (render_target_slice_offset is never set,
+		// CB_COLOR_VIEW base/last array slice stay 0, PA_CL_VS_OUT_CNTL is 0 so there is no
+		// vertex layer export, and VGT_GS_INSTANCE_CNT is 0). Fanning instances therefore
+		// wrote every draw across all layers and produced a corrupt volume. The slice index
+		// lives in the geometry shader that this path skips, so it must be recovered from
+		// there before any fan-out is synthesised. Left as the guest submitted it.
 		LOGF_BOUNDED(64,
 		             "WriteToSlice draw: slices=%u color_count=%u ps_active=%d num_layers=%u"
-		             " color0_fmt=%d color0_addr=0x%010" PRIx64 " instances=%u\n",
+		             " color0_fmt=%d color0_addr=0x%010" PRIx64 " instances=%u"
+		             " guest_instances=%u index_count=%u prim=0x%x first_inst=%u indexed=%d\n",
 		             state.writetoslice.slice_count, state.color_count, state.ps_active ? 1 : 0,
 		             state.rendering.num_layers,
 		             state.color_count > 0 ? static_cast<int>(state.color_info[0].format) : -1,
 		             state.color_count > 0 ? state.color_info[0].base_addr : 0,
-		             writetoslice_draw.instance_count);
+		             writetoslice_draw.instance_count, draw.instance_count, draw.index_count,
+		             static_cast<uint32_t>(ucfg.GetPrimType()), draw.first_instance,
+		             emit.indexed ? 1 : 0);
+		// Count how many LUT (32-slice) draws the guest issues per generation: if it submits one
+		// draw per slice then the slice index must come from shader state, not from instancing,
+		// and fanning instances ourselves is wrong.
+		if (state.writetoslice.slice_count == 32u) {
+			static std::atomic<uint32_t> lut_draws {0};
+			const auto n = lut_draws.fetch_add(1, std::memory_order_relaxed) + 1;
+			LOGF_BOUNDED(200, "WriteToSlice LUT draw #%u addr=0x%010" PRIx64 "\n", n,
+			             state.color_count > 0 ? state.color_info[0].base_addr : 0);
+		}
 		// Diagnostic capture hook: the colour-grading LUT is only produced in occasional
 		// frames, so capturing an arbitrary frame usually misses it entirely. When
 		// KYTY_RD_CAPTURE_LUT is set, ask RenderDoc for a capture as soon as a 32-slice
