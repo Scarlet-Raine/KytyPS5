@@ -1415,6 +1415,15 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	options.dump_label           = "ShaderRecompiler VS";
 	options.route_layer_from_instance = route_layer_from_instance;
 
+	// Diagnostic for the descriptor-provenance blocker: a VS/ES shader compiled with zero user
+	// SGPRs cannot resolve any V# passed in user data (every descriptor dword is Unknown), so all
+	// its draws are skipped. Log only that anomaly so it is not noisy for healthy shaders.
+	if (options.user_data_count == 0) {
+		LOGF("ShaderRecompiler VS 0x%016" PRIx64 " user_data_count=0 (gs.user_sgpr=%u) - "
+		     "descriptors from user data will be unresolved\n",
+		     options.shader_hash, regs.gs_regs.rsrc2.user_sgpr);
+	}
+
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {

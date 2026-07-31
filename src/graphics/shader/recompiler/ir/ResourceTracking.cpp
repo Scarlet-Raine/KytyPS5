@@ -242,14 +242,20 @@ private:
 						unknown_count++;
 					}
 				}
+				std::string dword_detail;
+				for (uint32_t d = 0; d < descriptor->dword_count; d++) {
+					dword_detail += fmt::format(
+					    " d{}={}", d,
+					    DescribeScalarProvenance(m_program.provenance, descriptor->dwords[d], 24));
+				}
 				return Fail(
 				    pc, error,
 				    fmt::format(
-				        "descriptor source {} dword {} contains an unknown value {} ({}) terminal {}:{}@0x{:x}({}) unresolved scalar destinations{}{}",
+				        "descriptor source {} dword {} contains an unknown value {} ({}) terminal {}:{}@0x{:x}({}) unresolved scalar destinations{}{} chain:[{}]",
 				        source, i, value, ScalarValueToString(m_program.provenance, value), terminal,
 				        terminal_op, terminal_pc,
 				        ScalarValueToString(m_program.provenance, terminal), unknown_destinations,
-				        unknown_count > 8 ? " ..." : ""));
+				        unknown_count > 8 ? " ..." : "", dword_detail));
 			}
 		}
 		const auto dynamic =
