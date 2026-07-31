@@ -235,6 +235,37 @@ static std::span<const uint32_t> ShaderGetMappedCode(uint64_t shader_addr, const
 	return {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
 }
 
+// Bounded diagnostic: disassemble an arbitrary shader address without recompiling it.
+// Needed for stages the renderer never compiles - notably the geometry shader of a
+// WriteToSlice volume draw, which is where the destination slice index is computed. Unlike
+// ShaderGetMappedCode this never EXITs when the address is absent from the shader map,
+// because a skipped stage legitimately may not be registered there.
+void ShaderDbgDumpProgramAt(uint64_t addr, uint64_t hash, const char* label) {
+	if (!ShaderAddressValid(addr)) {
+		LOGF("%s: 0x%016" PRIx64 " is not a valid shader address\n", label, addr);
+		return;
+	}
+	ShaderMappedData data;
+	if (!ShaderGetMappedData(addr, data) || data.code_size_bytes == 0 ||
+	    data.code_size_bytes % sizeof(uint32_t) != 0) {
+		LOGF("%s: no usable mapped code at 0x%016" PRIx64 " (size=0x%08" PRIx32 ")\n", label, addr,
+		     data.code_size_bytes);
+		return;
+	}
+	const std::span<const uint32_t> code {reinterpret_cast<const uint32_t*>(addr),
+	                                      data.code_size_bytes / sizeof(uint32_t)};
+	ShaderRecompiler::Decoder::Program program;
+	std::string                       error;
+	const bool ok = ShaderRecompiler::Decoder::DecodeProgram(code, program, &error);
+	LOGF("%s: addr=0x%016" PRIx64 " hash=0x%016" PRIx64 " words=%" PRIu32 " decoded=%d"
+	     " instructions=%" PRIu32 " error=%s\n",
+	     label, addr, hash, static_cast<uint32_t>(code.size()), ok ? 1 : 0,
+	     static_cast<uint32_t>(program.instructions.size()), error.c_str());
+	for (const auto& inst: program.instructions) {
+		LOGF("  %s\n", ShaderRecompiler::Decoder::InstructionToString(inst).c_str());
+	}
+}
+
 #if 0
 // Kept as disabled debugging guards for investigating unusual stage register state.
 static void vs_check(const HW::VertexShaderInfo& vs, const HW::ShaderRegisters& sh) {

@@ -246,6 +246,11 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
                           ShaderComputeInputInfo& input_info, std::vector<uint32_t>& spirv);
 bool ShaderAddressValid(uint64_t addr);
 
+// Disassemble a shader at an arbitrary address for diagnostics, without recompiling it and
+// without failing hard when the address is not registered in the shader map. Used to inspect
+// stages the renderer skips (e.g. the geometry shader of a WriteToSlice volume draw).
+void ShaderDbgDumpProgramAt(uint64_t addr, uint64_t hash, const char* label);
+
 } // namespace Libs::Graphics
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_H_ */

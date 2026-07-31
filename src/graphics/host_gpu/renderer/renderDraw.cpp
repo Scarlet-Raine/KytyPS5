@@ -1,4 +1,4 @@
-#include "graphics/host_gpu/renderer/renderDraw.h"
+﻿#include "graphics/host_gpu/renderer/renderDraw.h"
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -465,6 +465,20 @@ static WriteToSliceInfo ClassifyWriteToSliceGs(const RenderCommandBuffer& buffer
 	}
 
 	return {true, slice_count, rt_slot};
+}
+
+// A matched WriteToSlice volume draw is only rendered when explicitly enabled for
+// experimentation. Measurement proved the current approach cannot be correct: in this NGG
+// merged ES-GS pattern the ES stage (the one compiled as our vertex shader) contains NO
+// export instructions at all - it only stages values into LDS - while the skipped GS performs
+// every export, including position (POS0), the render-target array index in POS1.z, the
+// parameters and the NGG primitive export. Rendering the ES alone therefore produces bogus
+// geometry and writes garbage into a volume the game later samples, which is worse than
+// leaving it untouched. The classification and diagnostics stay; the rendering waits until the
+// GS itself can be compiled.
+static bool WriteToSliceRenderEnabled() {
+	static const bool enabled = std::getenv("KYTY_RENDER_WRITETOSLICE") != nullptr;
+	return enabled;
 }
 
 static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
@@ -1198,6 +1212,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 			const auto n = lut_draws.fetch_add(1, std::memory_order_relaxed) + 1;
 			LOGF_BOUNDED(200, "WriteToSlice LUT draw #%u addr=0x%010" PRIx64 "\n", n,
 			             state.color_count > 0 ? state.color_info[0].base_addr : 0);
+			// One-shot disassembly of the geometry shader for this draw. Every other slice
+			// selector has been ruled out by measurement, so the destination slice must be
+			// computed here; this dump is what identifies where it comes from.
+			static const bool dump_gs = std::getenv("KYTY_DUMP_WRITETOSLICE_GS") != nullptr;
+			if (dump_gs && n == 1) {
+				const auto& vs_regs = buffer.GetShaders().GetVs();
+				ShaderDbgDumpProgramAt(vs_regs.gs_regs.data_addr, vs_regs.gs_regs.chksum,
+				                       "WriteToSlice GS");
+				ShaderDbgDumpProgramAt(vs_regs.es_regs.data_addr, vs_regs.gs_regs.chksum,
+				                       "WriteToSlice ES");
+			}
 		}
 		// Diagnostic capture hook: the colour-grading LUT is only produced in occasional
 		// frames, so capturing an arbitrary frame usually misses it entirely. When
@@ -1270,7 +1295,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	}
 
 	const auto writetoslice = ClassifyWriteToSliceGs(buffer);
-	if (!writetoslice.matched && ShouldSkipGeShader(buffer)) {
+	if ((!writetoslice.matched || !WriteToSliceRenderEnabled()) && ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
@@ -1415,7 +1440,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer,
 	}
 
 	const auto writetoslice = ClassifyWriteToSliceGs(buffer);
-	if (!writetoslice.matched && ShouldSkipGeShader(buffer)) {
+	if ((!writetoslice.matched || !WriteToSliceRenderEnabled()) && ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
