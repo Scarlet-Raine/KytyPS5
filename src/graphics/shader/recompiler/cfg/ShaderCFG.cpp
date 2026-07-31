@@ -1144,6 +1144,7 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 	labels.insert(end_pc);
 
 	std::map<uint32_t, SetpcTargetInfo> setpc_targets;
+	std::set<uint32_t>                  return_setpc_pcs;
 	bool                                indirect_setpc = false;
 	for (uint32_t i = 0; i < program.instructions.size(); i++) {
 		const auto& inst    = program.instructions[i];
@@ -1163,8 +1164,28 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 		} else if (inst.opcode == Opcode::SSetpcB64) {
 			SetpcTargetInfo target_info;
 			if (!ResolveSetpcTargets(program, i, target_info)) {
+				const bool is_tail =
+				    (i + 1u >= program.instructions.size()) ||
+				    (program.instructions[i + 1u].opcode == Opcode::SCodeEnd) ||
+				    (program.instructions[i + 1u].opcode == Opcode::SEndpgm);
+				const bool src_sgpr = inst.src0.kind == Decoder::OperandKind::Sgpr;
+				// A tail S_SETPC_B64 whose target cannot be resolved to an in-shader address is a
+				// return to a caller-supplied address (the GNM shader-return ABI: the PC comes
+				// from a live-in SGPR pair and nothing executable follows). Treat it as program
+				// end, exactly like S_ENDPGM. Non-tail unresolvable jumps are still failed - those
+				// may be genuine computed control flow we cannot model.
+				if (is_tail && src_sgpr) {
+					return_setpc_pcs.insert(inst.pc);
+					if (next_pc <= end_pc) {
+						labels.insert(next_pc);
+					}
+					continue;
+				}
 				SetFailure(graph, FailureKind::InvalidBranchTarget, UINT32_MAX,
-				           fmt::format("unsupported dynamic S_SETPC_B64 at pc 0x{:08x}", inst.pc),
+				           fmt::format("unsupported dynamic S_SETPC_B64 at pc 0x{:08x} (idx "
+				                       "{}/{} tail={} src_sgpr={} src_reg={})",
+				                       inst.pc, i, program.instructions.size(), is_tail ? 1 : 0,
+				                       src_sgpr ? 1 : 0, inst.src0.reg),
 				           error);
 				return false;
 			}
@@ -1241,31 +1262,40 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 			block.terminator.condition  = BranchCondition::Always;
 			block.terminator.true_block = pc_to_block.at(end_pc);
 		} else if (last.opcode == Opcode::SSetpcB64) {
-			const auto& target_info = setpc_targets.at(last.pc);
-			if (target_info.indirect) {
-				block.terminator.kind                   = TerminatorKind::IndirectBranch;
-				block.terminator.condition              = BranchCondition::Always;
-				block.terminator.indirect_pc_sgpr       = target_info.pc_sgpr;
-				block.terminator.indirect_selector_code = target_info.selector_code;
-				for (const auto target_pc: target_info.target_pcs) {
-					block.terminator.indirect_target_pcs.push_back(target_pc);
-					block.terminator.indirect_targets.push_back(pc_to_block.at(target_pc));
-				}
-				const auto selector_count = std::min(target_info.selector_values.size(),
-				                                     target_info.selector_target_pcs.size());
-				for (uint32_t i = 0; i < selector_count; i++) {
-					block.terminator.indirect_selector_values.push_back(
-					    target_info.selector_values[i]);
-					block.terminator.indirect_selector_targets.push_back(
-					    pc_to_block.at(target_info.selector_target_pcs[i]));
-				}
-				if (target_info.table_load_pc != UINT32_MAX) {
-					AddUnique(graph.code_table_load_pcs, target_info.table_load_pc);
-				}
-			} else {
+			if (return_setpc_pcs.contains(last.pc)) {
+				// Tail return (see label pass): behaves as program end. Fall through to the
+				// successor-edge switch below rather than continue, so the edge to the end
+				// block is recorded.
 				block.terminator.kind       = TerminatorKind::Branch;
 				block.terminator.condition  = BranchCondition::Always;
-				block.terminator.true_block = pc_to_block.at(target_info.target);
+				block.terminator.true_block = pc_to_block.at(end_pc);
+			} else {
+				const auto& target_info = setpc_targets.at(last.pc);
+				if (target_info.indirect) {
+					block.terminator.kind                   = TerminatorKind::IndirectBranch;
+					block.terminator.condition              = BranchCondition::Always;
+					block.terminator.indirect_pc_sgpr       = target_info.pc_sgpr;
+					block.terminator.indirect_selector_code = target_info.selector_code;
+					for (const auto target_pc: target_info.target_pcs) {
+						block.terminator.indirect_target_pcs.push_back(target_pc);
+						block.terminator.indirect_targets.push_back(pc_to_block.at(target_pc));
+					}
+					const auto selector_count = std::min(target_info.selector_values.size(),
+					                                      target_info.selector_target_pcs.size());
+					for (uint32_t i = 0; i < selector_count; i++) {
+						block.terminator.indirect_selector_values.push_back(
+						    target_info.selector_values[i]);
+						block.terminator.indirect_selector_targets.push_back(
+						    pc_to_block.at(target_info.selector_target_pcs[i]));
+					}
+					if (target_info.table_load_pc != UINT32_MAX) {
+						AddUnique(graph.code_table_load_pcs, target_info.table_load_pc);
+					}
+				} else {
+					block.terminator.kind       = TerminatorKind::Branch;
+					block.terminator.condition  = BranchCondition::Always;
+					block.terminator.true_block = pc_to_block.at(target_info.target);
+				}
 			}
 		} else if (IsUnconditionalBranch(last.opcode)) {
 			block.terminator.kind       = TerminatorKind::Branch;
