@@ -897,6 +897,17 @@ static void ApplyPixelOutputs(ShaderPixelInputInfo&                info,
 
 static std::string ShaderDescribeSpecialization(const ShaderRecompiler::IR::Program& program);
 
+// SPI_SHADER_PGM_RSRC2_*.USER_SGPR sometimes reads back as 0 even though the guest programmed user
+// data through SET_SH_REG writes to SPI_SHADER_USER_DATA_*. Hardware cannot run a shader that reads
+// user-data SGPRs with a zero user-SGPR count, so a zero means the count was not captured; fall
+// back to the number of slots actually written. This must be used everywhere the user-data count is
+// needed (recompile options AND runtime materialization) or the two disagree: the program compiles
+// with N user-data registers but materialization sees an empty span, no cached permutation ever
+// matches, and every draw compiles a new permutation until the cache overflows.
+static uint32_t ShaderUserDataCount(uint32_t rsrc2_user_sgpr, uint32_t written_count) {
+	return rsrc2_user_sgpr != 0 ? rsrc2_user_sgpr : written_count;
+}
+
 static bool LogPermutationMismatch(const ShaderProgramPermutation& permutation, const char* stage,
                                    uint64_t shader_hash, const std::string& error) {
 	static std::atomic<uint32_t> log_count {0};
@@ -916,7 +927,9 @@ static bool TryUseVertexPermutation(const ShaderProgramPermutation& permutation,
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs.gs_user_sgpr.value, regs.gs_regs.rsrc2.user_sgpr),
+	        std::span<const uint32_t>(regs.gs_user_sgpr.value,
+	                                  ShaderUserDataCount(regs.gs_regs.rsrc2.user_sgpr,
+	                                                      regs.gs_user_sgpr.count)),
 	        regs.es_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "VS", shader_hash, error);
 	}
@@ -930,7 +943,9 @@ static bool TryUsePixelPermutation(const ShaderProgramPermutation& permutation,
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs.ps_user_sgpr.value, regs.ps_regs.rsrc2.user_sgpr),
+	        std::span<const uint32_t>(regs.ps_user_sgpr.value,
+	                                  ShaderUserDataCount(regs.ps_regs.rsrc2.user_sgpr,
+	                                                      regs.ps_user_sgpr.count)),
 	        regs.ps_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "PS", shader_hash, error);
 	}
@@ -944,7 +959,9 @@ static bool TryUseComputePermutation(const ShaderProgramPermutation& permutation
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr),
+	        std::span<const uint32_t>(regs.cs_user_sgpr.value,
+	                                  ShaderUserDataCount(regs.cs_regs.user_sgpr,
+	                                                      regs.cs_user_sgpr.count)),
 	        regs.cs_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "CS", shader_hash, error);
 	}
@@ -1406,16 +1423,8 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	options.shader_hash          = regs.gs_regs.chksum;
 	options.shader_base          = shader_addr;
 	options.user_data_base       = 8;
-	options.user_data_count      = regs.gs_regs.rsrc2.user_sgpr;
-	// SPI_SHADER_PGM_RSRC2_GS.USER_SGPR sometimes reads back as 0 even though the guest programmed
-	// user data through SET_SH_REG writes to SPI_SHADER_USER_DATA_GS_*. Hardware cannot run a
-	// shader that reads user-data SGPRs with a zero user-SGPR count, so a zero here means the
-	// count was not captured; fall back to the number of user-data slots actually written
-	// (tracked as gs_user_sgpr.count). Without this every V# passed in user data resolves to an
-	// Unknown scalar and all of the shader's draws are skipped.
-	if (options.user_data_count == 0) {
-		options.user_data_count = regs.gs_user_sgpr.count;
-	}
+	options.user_data_count =
+	    ShaderUserDataCount(regs.gs_regs.rsrc2.user_sgpr, regs.gs_user_sgpr.count);
 	options.user_data            = regs.gs_user_sgpr.value;
 	options.descriptor_set       = 0;
 	options.push_constant_offset = 0;
@@ -1482,7 +1491,8 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	options.lane_mask_mode       = lane_mask_mode;
 	options.shader_hash          = shader_hash;
 	options.shader_base          = shader_addr;
-	options.user_data_count      = regs.ps_regs.rsrc2.user_sgpr;
+	options.user_data_count      = ShaderUserDataCount(regs.ps_regs.rsrc2.user_sgpr,
+	                                                   regs.ps_user_sgpr.count);
 	options.user_data            = regs.ps_user_sgpr.value;
 	options.descriptor_set       = input_info.descriptor_set;
 	options.push_constant_offset = input_info.push_constant_offset;
@@ -1534,7 +1544,8 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	options.stage                = ShaderType::Compute;
 	options.shader_hash          = shader_addr;
 	options.shader_base          = shader_addr;
-	options.user_data_count      = regs.cs_regs.user_sgpr;
+	options.user_data_count      = ShaderUserDataCount(regs.cs_regs.user_sgpr,
+	                                                   regs.cs_user_sgpr.count);
 	options.user_data            = regs.cs_user_sgpr.value;
 	options.descriptor_set       = 0;
 	options.push_constant_offset = 0;

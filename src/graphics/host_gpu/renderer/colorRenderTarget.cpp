@@ -93,6 +93,18 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	}
 	auto view = ResolveTargetViewInfo(
 	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
+	// A WriteToSlice volume target leaves CB_COLOR_VIEW single-slice (base == last) because on
+	// hardware the geometry shader selects the destination slice per primitive via
+	// SV_RenderTargetArrayIndex rather than the view. Resolving that as a plain 2D view would back
+	// the volume with a single-layer image, so the slices the shader writes land nowhere and a
+	// later 3D sample of the same address sees an unwritten volume. Promote a true volume target
+	// (attrib3.depth != 0) to a layered view covering all depth+1 slices.
+	if (rt.attrib3.depth != 0 && view.type == TargetViewType::Image2D && view.base_layer == 0) {
+		const uint32_t volume_slices = rt.attrib3.depth + 1u;
+		view.type                    = TargetViewType::Image2DArray;
+		view.layer_count             = volume_slices;
+		view.image_layers            = volume_slices;
+	}
 	// For a volume color target (WriteToSlice), CB_COLOR_VIEW.SLICE_MAX can exceed the real slice
 	// count by one relative to attrib3.depth. The authoritative slice count is depth+1; clamp the
 	// layered view/backing to it so the render-target backing matches the volume's mapped memory

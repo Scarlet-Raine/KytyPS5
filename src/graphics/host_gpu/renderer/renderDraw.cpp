@@ -1165,16 +1165,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
 	NoteDrawStage("EmitDrawPrimitives");
+	DrawCallInfo writetoslice_draw = draw;
 	if (state.writetoslice.matched) {
+		// On hardware the geometry shader fans one input primitive to every slice via
+		// SV_RenderTargetArrayIndex, so the guest submits a single instance. We render the ES stage
+		// as a plain vertex shader that writes gl_Layer = gl_InstanceIndex, so the slice fan-out has
+		// to come from instancing: issue one instance per slice. Without this only layer 0 of the
+		// volume is written and the remaining slices keep stale/undefined contents.
+		if (writetoslice_draw.instance_count <= 1u && state.writetoslice.slice_count > 1u) {
+			writetoslice_draw.instance_count = state.writetoslice.slice_count;
+		}
 		LOGF_BOUNDED(64,
 		             "WriteToSlice draw: slices=%u color_count=%u ps_active=%d num_layers=%u"
 		             " color0_fmt=%d color0_addr=0x%010" PRIx64 " instances=%u\n",
 		             state.writetoslice.slice_count, state.color_count, state.ps_active ? 1 : 0,
 		             state.rendering.num_layers,
 		             state.color_count > 0 ? static_cast<int>(state.color_info[0].format) : -1,
-		             state.color_count > 0 ? state.color_info[0].base_addr : 0, draw.instance_count);
+		             state.color_count > 0 ? state.color_info[0].base_addr : 0,
+		             writetoslice_draw.instance_count);
 	}
-	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
+	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, writetoslice_draw, emit);
 
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
