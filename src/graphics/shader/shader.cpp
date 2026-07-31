@@ -1407,6 +1407,15 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	options.shader_base          = shader_addr;
 	options.user_data_base       = 8;
 	options.user_data_count      = regs.gs_regs.rsrc2.user_sgpr;
+	// SPI_SHADER_PGM_RSRC2_GS.USER_SGPR sometimes reads back as 0 even though the guest programmed
+	// user data through SET_SH_REG writes to SPI_SHADER_USER_DATA_GS_*. Hardware cannot run a
+	// shader that reads user-data SGPRs with a zero user-SGPR count, so a zero here means the
+	// count was not captured; fall back to the number of user-data slots actually written
+	// (tracked as gs_user_sgpr.count). Without this every V# passed in user data resolves to an
+	// Unknown scalar and all of the shader's draws are skipped.
+	if (options.user_data_count == 0) {
+		options.user_data_count = regs.gs_user_sgpr.count;
+	}
 	options.user_data            = regs.gs_user_sgpr.value;
 	options.descriptor_set       = 0;
 	options.push_constant_offset = 0;
@@ -1416,13 +1425,13 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	options.dump_label           = "ShaderRecompiler VS";
 	options.route_layer_from_instance = route_layer_from_instance;
 
-	// Diagnostic for the descriptor-provenance blocker: a VS/ES shader compiled with zero user
-	// SGPRs cannot resolve any V# passed in user data (every descriptor dword is Unknown), so all
-	// its draws are skipped. Log only that anomaly so it is not noisy for healthy shaders.
-	if (options.user_data_count == 0) {
-		LOGF("ShaderRecompiler VS 0x%016" PRIx64 " user_data_count=0 (gs.user_sgpr=%u) - "
-		     "descriptors from user data will be unresolved\n",
-		     options.shader_hash, regs.gs_regs.rsrc2.user_sgpr);
+	// Diagnostic for the descriptor-provenance blocker: report when RSRC2_GS.USER_SGPR read back
+	// as 0 so the written-slot fallback had to recover the count. If the fallback is also 0 the
+	// shader genuinely has no user data and any user-data V# will be unresolved.
+	if (regs.gs_regs.rsrc2.user_sgpr == 0) {
+		LOGF("ShaderRecompiler VS 0x%016" PRIx64 " rsrc2.user_sgpr=0, recovered user_data_count=%u "
+		     "from written slots\n",
+		     options.shader_hash, options.user_data_count);
 	}
 
 	ShaderRecompiler::CompileResult result;
