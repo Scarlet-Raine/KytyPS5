@@ -206,6 +206,13 @@ bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand, std::strin
 		operand.reg  = code;
 		return true;
 	}
+	if (code >= 108u && code <= 123u) {
+		// TTMP0-15: launch-supplied trap-temporary scalars. Decoded symbolically so the
+		// full body can be dumped and its dataflow traced; lowering rejects them.
+		operand.kind = OperandKind::Ttmp;
+		operand.reg  = code - 108u;
+		return true;
+	}
 	if (code >= 128u && code <= 192u) {
 		operand.kind       = OperandKind::IntegerInlineConstant;
 		operand.signed_val = static_cast<int32_t>(code - 128u);
@@ -261,6 +268,11 @@ bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand& operand, std::
 	if (code <= 105u) {
 		operand.kind = OperandKind::Sgpr;
 		operand.reg  = code;
+		return true;
+	}
+	if (code >= 108u && code <= 123u) {
+		operand.kind = OperandKind::Ttmp;
+		operand.reg  = code - 108u;
 		return true;
 	}
 
@@ -940,6 +952,7 @@ std::string OperandToString(const Operand& operand) {
 			break;
 		case OperandKind::FloatInlineConstant: text = fmt::format("{:f}", operand.float_val); break;
 		case OperandKind::Sgpr: text = fmt::format("s{}", operand.reg); break;
+		case OperandKind::Ttmp: text = fmt::format("ttmp{}", operand.reg); break;
 		case OperandKind::Vgpr: text = fmt::format("v{}", operand.reg); break;
 		case OperandKind::VccLo: text = "vcc_lo"; break;
 		case OperandKind::VccHi: text = "vcc_hi"; break;

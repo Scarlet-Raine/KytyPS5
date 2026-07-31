@@ -553,6 +553,10 @@ enum class OperandKind {
 	PopsExitingWaveId,
 	Null,
 	Vgpr,
+	// Trap-temporary scalar (TTMP0-15). Decoded symbolically so a shader body that reads
+	// launch-supplied TTMP state can be fully decoded and dumped for analysis; the IR
+	// lowering still rejects it, so such shaders are not executed with a guessed value.
+	Ttmp,
 };
 
 enum ImageSampleFlag : uint32_t {

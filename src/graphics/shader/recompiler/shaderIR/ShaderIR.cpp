@@ -138,6 +138,12 @@ bool LowerRegisterOperand(const Decoder::Operand& decoded, Operand& operand, std
 			operand.reg.index = 0;
 			return true;
 		case Decoder::OperandKind::Null: operand.kind = OperandKind::Null; return true;
+		case Decoder::OperandKind::Ttmp:
+			// TTMP registers are launch-supplied live-ins whose values the recompiler cannot
+			// model yet. Decoding them keeps the full body dumpable; executing would require
+			// knowing the launch ABI value, so reject with a precise reason.
+			SetError(error, "TTMP scalar is launch-supplied state the recompiler does not model");
+			return false;
 		default: SetError(error, "decoded operand cannot be used as an IR register"); return false;
 	}
 }
