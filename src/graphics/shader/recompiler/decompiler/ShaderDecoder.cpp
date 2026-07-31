@@ -390,7 +390,8 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 						    "unknown RDNA2 instruction family at pc 0x{:08x}, raw=0x{:08x}", pc,
 						    word);
 					}
-					return false;
+					ok = false;
+					break;
 			}
 		}
 
@@ -398,6 +399,19 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 			if (error != nullptr) {
 				const uint32_t next = word_index + 1u < code.size() ? code[word_index + 1u] : 0u;
 				*error += fmt::format(" [raw@0x{:08x}=0x{:08x} next=0x{:08x}]", pc, word, next);
+				// Dump the tail of the successfully-decoded stream so alignment can be verified:
+				// each entry's pc + word_count*4 should equal the next pc, and the last should
+				// land exactly on the failing pc. A gap/overlap means an earlier length was wrong
+				// (misalignment) rather than a genuinely unknown instruction here.
+				const size_t count = program.instructions.size();
+				const size_t start = count > 10 ? count - 10 : 0;
+				std::string  tail;
+				for (size_t i = start; i < count; i++) {
+					const auto& prev = program.instructions[i];
+					tail += fmt::format(" {{pc=0x{:x} w={} raw=0x{:08x}}}", prev.pc,
+					                    prev.word_count, prev.word);
+				}
+				*error += fmt::format(" tail:{}", tail);
 			}
 			return false;
 		}
