@@ -533,6 +533,9 @@ enum class Opcode {
 	STtraceData,
 	SInstPrefetch,
 	SEndpgm,
+	// End of shader code (SOPP opcode 0x1f). Marks the end of the program and pads out the
+	// last instruction-cache line; nothing executable follows it. Decoding must stop here.
+	SCodeEnd,
 	Exp
 };
 
