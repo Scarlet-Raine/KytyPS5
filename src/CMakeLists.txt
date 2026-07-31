@@ -287,6 +287,7 @@ function(add_kyty_full_emulator_test target source)
 endfunction()
 
 add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
+add_kyty_full_emulator_test(shader_decoder_termination_tests ../tests/ShaderDecoderTerminationTests.cpp)
 
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
